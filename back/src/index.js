@@ -25,13 +25,22 @@ function isOriginAllowed(origin) {
 
   const normalizedOrigin = origin.replace(/\/$/, '');
 
+  if (normalizedOrigin.endsWith('.vercel.app')) {
+    return true;
+  }
+
   return CLIENT_ORIGINS.some((allowedOrigin) => {
     if (allowedOrigin === normalizedOrigin) {
       return true;
     }
 
     if (allowedOrigin.includes('*')) {
-      const pattern = new RegExp(`^${allowedOrigin.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace('\\*', '.*')}$`);
+      const pattern = new RegExp(
+        `^${allowedOrigin
+          .split('*')
+          .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
+          .join('.*')}$`
+      );
       return pattern.test(normalizedOrigin);
     }
 
