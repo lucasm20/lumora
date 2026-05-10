@@ -6,11 +6,36 @@ const { HR_USER, seedHrUser } = require('./hrUser');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
-const DEFAULT_CLIENT_ORIGINS = ['http://localhost:5173', 'https://lumora-nine-olive.vercel.app'];
+const DEFAULT_CLIENT_ORIGINS = [
+  'http://localhost:5173',
+  'https://lumora-nine-olive.vercel.app',
+  'https://lumora-668dbouqn-lucas-projects-ca67a672.vercel.app',
+];
 const CLIENT_ORIGINS = (process.env.CLIENT_ORIGIN || DEFAULT_CLIENT_ORIGINS.join(','))
   .split(',')
   .map((origin) => origin.trim().replace(/\/$/, ''))
   .filter(Boolean);
+
+function isOriginAllowed(origin) {
+  if (!origin) {
+    return true;
+  }
+
+  const normalizedOrigin = origin.replace(/\/$/, '');
+
+  return CLIENT_ORIGINS.some((allowedOrigin) => {
+    if (allowedOrigin === normalizedOrigin) {
+      return true;
+    }
+
+    if (allowedOrigin.includes('*')) {
+      const pattern = new RegExp(`^${allowedOrigin.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace('\\*', '.*')}$`);
+      return pattern.test(normalizedOrigin);
+    }
+
+    return false;
+  });
+}
 const COMPANIES_CACHE_TTL_MS = Number(process.env.COMPANIES_CACHE_TTL_MS || 5 * 60 * 1000);
 const CAPTURE_REQUEST_WAIT_MS = Number(process.env.CAPTURE_REQUEST_WAIT_MS || 8000);
 const CAPTURE_REQUEST_POLL_MS = Number(process.env.CAPTURE_REQUEST_POLL_MS || 500);
@@ -61,7 +86,7 @@ function sleep(ms) {
 app.use(
   cors({
     origin(origin, callback) {
-      if (!origin || CLIENT_ORIGINS.includes(origin.replace(/\/$/, ''))) {
+      if (isOriginAllowed(origin)) {
         callback(null, true);
         return;
       }
