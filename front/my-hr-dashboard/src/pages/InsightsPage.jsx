@@ -99,7 +99,14 @@ const InsightsPage = () => {
       );
 
       const refreshed = await getEmployees(token);
-      setEmployees(Array.isArray(refreshed.employees) ? refreshed.employees : []);
+      const nextEmployees = Array.isArray(refreshed.employees) ? refreshed.employees : [];
+      setEmployees(nextEmployees);
+
+      window.dispatchEvent(
+        new CustomEvent('employees:update', {
+          detail: { source: 'process-images', processed: results.length },
+        })
+      );
 
       if (!results.length && skipped.length) {
         setProcessSummary(`No se proceso ningun empleado. ${skipped[0].reason}`);

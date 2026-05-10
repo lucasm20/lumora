@@ -144,6 +144,24 @@ export async function processActiveEmployeeEmotions(idToken) {
   });
 }
 
+export async function getWeeklyEmotionTrend(idToken, period = 'Week') {
+  const params = new URLSearchParams({ period });
+
+  return request(`/emotions/weekly-trend?${params.toString()}`, {
+    headers: {
+      Authorization: `Bearer ${idToken}`,
+    },
+  });
+}
+
+export async function getEmotionDistribution(idToken) {
+  return request('/emotions/distribution', {
+    headers: {
+      Authorization: `Bearer ${idToken}`,
+    },
+  });
+}
+
 export async function updateCameraStatus(idToken, cameraOn) {
   return request('/camera/status', {
     method: 'POST',

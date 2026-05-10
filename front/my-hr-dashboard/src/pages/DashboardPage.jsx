@@ -1,12 +1,278 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { getEmotionDistribution, getEmployees, getWeeklyEmotionTrend } from '../services/api';
 import '../App.css';
 
+const EMOTION_COLORS = {
+  happy: '#22c55e',
+  neutral: '#94a3b8',
+  stress: '#f97316',
+  sad: '#2f80ed',
+  angry: '#ef4444',
+  fear: '#8b5cf6',
+  surprise: '#14b8a6',
+  disgust: '#f5b400',
+  drowsiness: '#4f46e5',
+};
+
+const emotionItems = [
+  { key: 'happy', label: 'HAPPY', display: 'Happy', tone: EMOTION_COLORS.happy, emoji: '\u{1F60A}' },
+  { key: 'neutral', label: 'NEUTRAL', display: 'Neutral', tone: EMOTION_COLORS.neutral, emoji: '\u{1F610}' },
+  { key: 'stress', label: 'STRESS', display: 'Stress', tone: EMOTION_COLORS.stress, emoji: '\u{1F62B}' },
+  { key: 'sad', label: 'SAD', display: 'Sad', tone: EMOTION_COLORS.sad, emoji: '\u{1F622}' },
+  { key: 'angry', label: 'ANGRY', display: 'Angry', tone: EMOTION_COLORS.angry, emoji: '\u{1F620}' },
+  { key: 'fear', label: 'FEAR', display: 'Fear', tone: EMOTION_COLORS.fear, emoji: '\u{1F628}' },
+  { key: 'surprise', label: 'SURPRISE', display: 'Surprise', tone: EMOTION_COLORS.surprise, emoji: '\u{1F632}' },
+  { key: 'disgust', label: 'DISGUST', display: 'Disgust', tone: EMOTION_COLORS.disgust, emoji: '\u{1F922}' },
+  { key: 'drowsiness', label: 'DROWSINESS', display: 'Drowsiness', tone: EMOTION_COLORS.drowsiness, emoji: '\u{1F634}' },
+];
+
+const periodOptions = ['1h', 'Today', 'Week', 'Month', 'Custom'];
+const weekdayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+const emotionAliases = {
+  anger: 'angry',
+  angry: 'angry',
+  disgust: 'disgust',
+  disgusted: 'disgust',
+  drowsiness: 'drowsiness',
+  drowsy: 'drowsiness',
+  fear: 'fear',
+  fearful: 'fear',
+  happy: 'happy',
+  joy: 'happy',
+  neutral: 'neutral',
+  sad: 'sad',
+  sadness: 'sad',
+  stress: 'stress',
+  stressed: 'stress',
+  surprise: 'surprise',
+  surprised: 'surprise',
+};
+
+const emptyEmotionCounts = emotionItems.reduce((counts, item) => {
+  counts[item.key] = 0;
+  return counts;
+}, {});
+
+const emptyTrendDays = weekdayLabels.map((label) => ({
+  label,
+  counts: { ...emptyEmotionCounts },
+}));
+
+function normalizeText(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function normalizeEmotion(value) {
+  return emotionAliases[normalizeText(value)] || '';
+}
+
+function getEmployeeLiveVibe(employee) {
+  return (
+    normalizeEmotion(employee?.lastEmotion) ||
+    normalizeEmotion(employee?.liveVibe) ||
+    normalizeEmotion(employee?.emotion) ||
+    normalizeEmotion(employee?.dominantEmotion) ||
+    normalizeEmotion(employee?.vibe)
+  );
+}
+
+function isEmployee(employee) {
+  return normalizeText(employee?.role) === 'employee';
+}
+
+function isActiveEmployee(employee) {
+  const status = normalizeText(employee?.status);
+  return employee?.active !== false && employee?.disabled !== true && status !== 'inactive';
+}
+
+function belongsToCurrentCompany(employee, userProfile) {
+  const profileCompanyId = normalizeText(userProfile?.companyId);
+  const employeeCompanyId = normalizeText(employee?.companyId);
+
+  if (profileCompanyId && employeeCompanyId) {
+    return profileCompanyId === employeeCompanyId;
+  }
+
+  const profileCompanyName = normalizeText(userProfile?.companyName);
+  const employeeCompanyName = normalizeText(employee?.companyName);
+
+  if (profileCompanyName && employeeCompanyName) {
+    return profileCompanyName === employeeCompanyName;
+  }
+
+  return !profileCompanyId && !profileCompanyName;
+}
+
+function buildSmoothPath(points) {
+  if (!points.length) {
+    return '';
+  }
+
+  if (points.length === 1) {
+    return `M ${points[0].x} ${points[0].y}`;
+  }
+
+  return points.reduce((path, point, index) => {
+    if (index === 0) {
+      return `M ${point.x} ${point.y}`;
+    }
+
+    const previous = points[index - 1];
+    const controlOffset = (point.x - previous.x) * 0.5;
+    return `${path} C ${previous.x + controlOffset} ${previous.y}, ${point.x - controlOffset} ${point.y}, ${point.x} ${point.y}`;
+  }, '');
+}
+
+function WeeklyEmotionTrendChart({ days, maxValue }) {
+  const [activeIndex, setActiveIndex] = useState(2);
+  const [showTooltip, setShowTooltip] = useState(false);
+  const chartDays = days?.length ? days : emptyTrendDays;
+  const width = 760;
+  const height = 238;
+  const padding = { top: 22, right: 24, bottom: 34, left: 46 };
+  const innerWidth = width - padding.left - padding.right;
+  const innerHeight = height - padding.top - padding.bottom;
+  const tickStep = Math.max(1, Math.ceil(Math.max(maxValue, 4) / 4));
+  const chartMax = tickStep * 4;
+  const ticks = Array.from({ length: 5 }, (_, index) => chartMax - index * tickStep);
+  const activeDay = chartDays[activeIndex] || chartDays[0];
+  const activeX =
+    chartDays.length > 1
+      ? padding.left + (innerWidth / (chartDays.length - 1)) * activeIndex
+      : padding.left;
+
+  const getPoint = (dayIndex, emotionKey) => {
+    const value = chartDays[dayIndex]?.counts?.[emotionKey] || 0;
+    const x =
+      chartDays.length > 1
+        ? padding.left + (innerWidth / (chartDays.length - 1)) * dayIndex
+        : padding.left;
+    const y = padding.top + innerHeight - (value / chartMax) * innerHeight;
+    return { x, y, value };
+  };
+
+  return (
+    <div className="trend-chart-inner" onMouseLeave={() => setShowTooltip(false)}>
+      <svg className="trend-svg" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Weekly emotion trend">
+        <defs>
+          <filter id="trendLineShadow" x="-10%" y="-40%" width="120%" height="180%">
+            <feDropShadow dx="0" dy="3" stdDeviation="3" floodColor="#64748b" floodOpacity="0.16" />
+          </filter>
+        </defs>
+
+        {ticks.map((tick) => {
+          const y = padding.top + innerHeight - (tick / chartMax) * innerHeight;
+          return (
+            <g key={tick}>
+              <text className="trend-y-label" x={18} y={y + 4}>
+                {tick}
+              </text>
+              <line className="trend-grid-line" x1={padding.left} x2={width - padding.right} y1={y} y2={y} />
+            </g>
+          );
+        })}
+
+        {chartDays.map((day, index) => {
+          const x =
+            chartDays.length > 1
+              ? padding.left + (innerWidth / (chartDays.length - 1)) * index
+              : padding.left;
+          return (
+            <text className="trend-x-label" key={day.label} x={x} y={height - 9}>
+              {day.label}
+            </text>
+          );
+        })}
+
+        <line
+          className="trend-active-line"
+          x1={activeX}
+          x2={activeX}
+          y1={padding.top}
+          y2={height - padding.bottom}
+        />
+
+        {emotionItems.map((emotion) => {
+          const points = chartDays.map((_, index) => getPoint(index, emotion.key));
+          return (
+            <g key={emotion.key}>
+              <path
+                className="trend-series-line"
+                d={buildSmoothPath(points)}
+                stroke={emotion.tone}
+                filter="url(#trendLineShadow)"
+              />
+              {points.map((point, index) => (
+                <circle
+                  className="trend-series-point"
+                  key={`${emotion.key}-${chartDays[index].label}`}
+                  cx={point.x}
+                  cy={point.y}
+                  r={activeIndex === index ? 4.4 : 3.2}
+                  fill={emotion.tone}
+                />
+              ))}
+            </g>
+          );
+        })}
+      </svg>
+
+      <div className="trend-hit-grid" aria-hidden="true">
+        {chartDays.map((day, index) => (
+          <span
+            key={day.label}
+            onMouseEnter={() => {
+              setActiveIndex(index);
+              setShowTooltip(true);
+            }}
+            onFocus={() => {
+              setActiveIndex(index);
+              setShowTooltip(true);
+            }}
+            onBlur={() => setShowTooltip(false)}
+          />
+        ))}
+      </div>
+
+      {showTooltip && (
+        <div
+          className="trend-live-tooltip"
+          style={{
+            left: `${(activeX / width) * 100}%`,
+            transform:
+              activeIndex === 0
+                ? 'translateX(0)'
+                : activeIndex === chartDays.length - 1
+                  ? 'translateX(-100%)'
+                  : 'translateX(-50%)',
+          }}
+        >
+          <strong>{activeDay?.label || 'Mon'}</strong>
+          {emotionItems.map((emotion) => (
+            <span key={emotion.key} style={{ color: emotion.tone }}>
+              {emotion.display}: {activeDay?.counts?.[emotion.key] || 0}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const DashboardPage = () => {
-  const { userProfile, logout } = useAuth();
+  const { firebaseUser, userProfile, logout } = useAuth();
   const navigate = useNavigate();
-  const [dominantEmotion, setDominantEmotion] = useState('neutral');
+  const [employees, setEmployees] = useState([]);
+  const [selectedPeriod, setSelectedPeriod] = useState('Week');
+  const [weeklyTrend, setWeeklyTrend] = useState({
+    days: emptyTrendDays,
+    maxValue: 0,
+  });
+  const [emotionDistribution, setEmotionDistribution] = useState(null);
+  const [dashboardError, setDashboardError] = useState('');
 
   const emotionPalette = useMemo(
     () => ({
@@ -24,27 +290,136 @@ const DashboardPage = () => {
   );
 
   useEffect(() => {
-    const handleEmotionUpdate = (event) => {
-      const nextEmotion = event?.detail?.emotion;
-      if (typeof nextEmotion === 'string') {
-        setDominantEmotion(nextEmotion.toLowerCase());
+    let isMounted = true;
+
+    async function loadDashboardData() {
+      if (!firebaseUser) {
+        if (isMounted) {
+          setEmployees([]);
+          setWeeklyTrend({ days: emptyTrendDays, maxValue: 0 });
+          setEmotionDistribution(null);
+        }
+        return;
+      }
+
+      try {
+        const token = await firebaseUser.getIdToken();
+        const [employeesData, trendData, distributionData] = await Promise.all([
+          getEmployees(token),
+          getWeeklyEmotionTrend(token, selectedPeriod),
+          getEmotionDistribution(token).catch(() => null),
+        ]);
+
+        if (isMounted) {
+          setEmployees(Array.isArray(employeesData.employees) ? employeesData.employees : []);
+          setWeeklyTrend({
+            days: Array.isArray(trendData.days) ? trendData.days : emptyTrendDays,
+            maxValue: Number(trendData.maxValue) || 0,
+          });
+          setEmotionDistribution(distributionData);
+          setDashboardError('');
+        }
+      } catch (requestError) {
+        if (isMounted) {
+          setDashboardError(requestError.message || 'Could not load dashboard data.');
+        }
+      }
+    }
+
+    loadDashboardData();
+
+    const handleDashboardRefresh = () => {
+      loadDashboardData();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        loadDashboardData();
       }
     };
 
-    window.addEventListener('emotion:update', handleEmotionUpdate);
-    return () => window.removeEventListener('emotion:update', handleEmotionUpdate);
-  }, []);
+    window.addEventListener('employees:update', handleDashboardRefresh);
+    window.addEventListener('emotion:update', handleDashboardRefresh);
+    window.addEventListener('focus', handleDashboardRefresh);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      isMounted = false;
+      window.removeEventListener('employees:update', handleDashboardRefresh);
+      window.removeEventListener('emotion:update', handleDashboardRefresh);
+      window.removeEventListener('focus', handleDashboardRefresh);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [firebaseUser, selectedPeriod]);
+
+  const companyEmployees = useMemo(() => {
+    return employees.filter((employee) => {
+      return isEmployee(employee) && isActiveEmployee(employee) && belongsToCurrentCompany(employee, userProfile);
+    });
+  }, [employees, userProfile]);
+
+  const emotionStats = useMemo(() => {
+    if (emotionDistribution?.percentages && emotionDistribution?.counts) {
+      const counts = {
+        ...emptyEmotionCounts,
+        ...emotionDistribution.counts,
+      };
+      const percentages = emotionItems.reduce((nextPercentages, item) => {
+        nextPercentages[item.key] = Number(emotionDistribution.percentages[item.key]) || 0;
+        return nextPercentages;
+      }, {});
+      const dominant = emotionItems.reduce(
+        (current, item) => (counts[item.key] > current.count ? { key: item.key, count: counts[item.key] } : current),
+        { key: 'neutral', count: 0 }
+      );
+
+      return {
+        counts,
+        percentages,
+        total: Number(emotionDistribution.total) || 0,
+        dominantEmotion: dominant.count > 0 ? dominant.key : 'neutral',
+      };
+    }
+
+    const counts = { ...emptyEmotionCounts };
+
+    companyEmployees.forEach((employee) => {
+      const emotion = getEmployeeLiveVibe(employee);
+
+      if (emotion) {
+        counts[emotion] += 1;
+      }
+    });
+
+    const total = Object.values(counts).reduce((sum, value) => sum + value, 0);
+    const percentages = emotionItems.reduce((nextPercentages, item) => {
+      nextPercentages[item.key] = total ? Math.round((counts[item.key] / total) * 100) : 0;
+      return nextPercentages;
+    }, {});
+
+    const dominant = emotionItems.reduce(
+      (current, item) => (counts[item.key] > current.count ? { key: item.key, count: counts[item.key] } : current),
+      { key: 'neutral', count: 0 }
+    );
+
+    return {
+      counts,
+      percentages,
+      total,
+      dominantEmotion: dominant.count > 0 ? dominant.key : 'neutral',
+    };
+  }, [companyEmployees, emotionDistribution]);
 
 
   const dominantStyle = useMemo(() => {
-    const palette = emotionPalette[dominantEmotion] || emotionPalette.neutral;
+    const palette = emotionPalette[emotionStats.dominantEmotion] || emotionPalette.neutral;
     return {
       '--vibe-c1': palette.c1,
       '--vibe-c2': palette.c2,
       '--vibe-c3': palette.c3,
       '--vibe-glow': palette.glow,
     };
-  }, [dominantEmotion, emotionPalette]);
+  }, [emotionStats.dominantEmotion, emotionPalette]);
 
   const handleLogout = async () => {
     await logout();
@@ -107,8 +482,8 @@ const DashboardPage = () => {
           <div className="card-panel mini-card">
           <div className="mini-icon" />
           <div>
-            <span className="mini-value">1</span>
-            <span className="mini-label">TOTAL ACTIVE TALENT</span>
+            <span className="mini-value">{companyEmployees.length}</span>
+            <span className="mini-label">TOTAL EMPLOYEES</span>
           </div>
           <span className="mini-live">LIVE</span>
           <div className="mini-ring" />
@@ -121,11 +496,16 @@ const DashboardPage = () => {
               <p>Evolving organic pattern</p>
             </div>
             <div className="dominant-filters">
-              <button className="filter-chip" type="button">1h</button>
-              <button className="filter-chip" type="button">Today</button>
-              <button className="filter-chip active" type="button">Week</button>
-              <button className="filter-chip" type="button">Month</button>
-              <button className="filter-chip" type="button">Custom</button>
+              {periodOptions.map((period) => (
+                <button
+                  className={`filter-chip${selectedPeriod === period ? ' active' : ''}`}
+                  type="button"
+                  key={period}
+                  onClick={() => setSelectedPeriod(period)}
+                >
+                  {period}
+                </button>
+              ))}
               <button className="export-button" type="button">Export as PDF</button>
             </div>
           </div>
@@ -149,33 +529,33 @@ const DashboardPage = () => {
           </div>
           <div className="ticker-item">
             <span className="ticker-pill">INFO</span>
-            <span>System connected. Monitoring live streams...</span>
+            <span>{dashboardError || 'System connected. Monitoring live streams...'}</span>
             <span className="ticker-time">01:35</span>
           </div>
           </div>
         </section>
 
       <section className="emotion-row">
-        {[
-          { label: 'HAPPY', tone: '#f97316', emoji: '😊' },
-          { label: 'NEUTRAL', tone: '#94a3b8', emoji: '😐' },
-          { label: 'STRESS', tone: '#f59e0b', emoji: '😫' },
-          { label: 'SAD', tone: '#60a5fa', emoji: '😢' },
-          { label: 'ANGRY', tone: '#f87171', emoji: '😠' },
-          { label: 'FEAR', tone: '#818cf8', emoji: '😨' },
-          { label: 'SURPRISE', tone: '#22c55e', emoji: '😲' },
-          { label: 'DISGUST', tone: '#34d399', emoji: '🤢' },
-          { label: 'DROWSINESS', tone: '#a855f7', emoji: '😴' }
-        ].map((item) => (
+        {emotionItems.map((item) => {
+          const percentage = emotionStats.percentages[item.key] || 0;
+
+          return (
           <div className="emotion-card" key={item.label}>
             <div className="emotion-top">
               <span className="emotion-emoji">{item.emoji}</span>
-              <span className="emotion-value">0%</span>
+              <span className="emotion-value">{percentage}%</span>
             </div>
             <span className="emotion-label">{item.label}</span>
-            <span className="emotion-bar" style={{ background: item.tone }} />
+            <span
+              className="emotion-bar"
+              style={{
+                background: item.tone,
+                width: `${percentage}%`,
+              }}
+            />
           </div>
-        ))}
+          );
+        })}
       </section>
 
       <section className="macro-section">
@@ -193,59 +573,32 @@ const DashboardPage = () => {
         </div>
 
         <div className="macro-grid">
-          <div className="macro-card">
+          <div className="macro-card emotion-distribution-card">
             <h3>Emotion Distribution</h3>
-            <div className="macro-chart" />
             <div className="emotion-distribution">
-              <span className="emotion" style={{ backgroundColor: '#4CAF50' }}>Happy</span>
-              <span className="emotion" style={{ backgroundColor: '#9E9E9E' }}>Neutral</span>
-              <span className="emotion" style={{ backgroundColor: '#FF9800' }}>Stress</span>
-              <span className="emotion" style={{ backgroundColor: '#2196F3' }}>Sad</span>
-              <span className="emotion" style={{ backgroundColor: '#F44336' }}>Angry</span>
-              <span className="emotion" style={{ backgroundColor: '#9C27B0' }}>Fear</span>
-              <span className="emotion" style={{ backgroundColor: '#00BCD4' }}>Surprise</span>
-              <span className="emotion" style={{ backgroundColor: '#FFEB3B' }}>Disgust</span>
-              <span className="emotion" style={{ backgroundColor: '#00B0FF' }}>Drowsiness</span>
+              {emotionItems.map((emotion) => (
+                <span className="emotion" key={emotion.key} style={{ color: emotion.tone }}>
+                  <i style={{ backgroundColor: emotion.tone }} />
+                  {emotion.display}
+                </span>
+              ))}
             </div>
           </div>
 
-          <div className="macro-card">
-            <h3>Weekly Emotion Trend</h3>
-            <div className="macro-chart chart-wide trend-chart">
-              <div className="trend-grid">
-                <span>4</span>
-                <span>3</span>
-                <span>2</span>
-                <span>1</span>
-                <span>0</span>
+          <div className="macro-card trend-card">
+            <div className="trend-card-header">
+              <h3>Weekly Emotion Trend</h3>
+              <div className="trend-legend">
+                {emotionItems.map((emotion) => (
+                  <span key={emotion.key} style={{ color: emotion.tone }}>
+                    <i style={{ backgroundColor: emotion.tone }} />
+                    {emotion.display}
+                  </span>
+                ))}
               </div>
-              <div className="trend-line">
-                <span className="trend-point" />
-                <span className="trend-point" />
-                <span className="trend-point" />
-                <span className="trend-point" />
-                <span className="trend-point" />
-              </div>
-              <div className="trend-tooltip">
-                <strong>Tue</strong>
-                <span className="t-happy">Happy: 0</span>
-                <span className="t-neutral">Neutral: 0</span>
-                <span className="t-stress">Stress: 0</span>
-                <span className="t-sad">Sad: 0</span>
-                <span className="t-angry">Angry: 0</span>
-                <span className="t-fear">Fear: 0</span>
-                <span className="t-surprise">Surprise: 0</span>
-                <span className="t-disgust">Disgust: 0</span>
-                <span className="t-drowsy">Drowsiness: 0</span>
-              </div>
-              <div className="trend-hover" />
             </div>
-            <div className="macro-axis trend-axis">
-              <span>Mon</span>
-              <span>Tue</span>
-              <span>Wed</span>
-              <span>Thu</span>
-              <span>Fri</span>
+            <div className="macro-chart chart-wide trend-chart">
+              <WeeklyEmotionTrendChart days={weeklyTrend.days} maxValue={weeklyTrend.maxValue} />
             </div>
           </div>
 
