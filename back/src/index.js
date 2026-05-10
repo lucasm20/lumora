@@ -10,11 +10,13 @@ const DEFAULT_CLIENT_ORIGINS = [
   'http://localhost:5173',
   'https://lumora-nine-olive.vercel.app',
   'https://lumora-668dbouqn-lucas-projects-ca67a672.vercel.app',
+  'https://*.vercel.app',
 ];
-const CLIENT_ORIGINS = (process.env.CLIENT_ORIGIN || DEFAULT_CLIENT_ORIGINS.join(','))
+const ENV_CLIENT_ORIGINS = (process.env.CLIENT_ORIGIN || '')
   .split(',')
   .map((origin) => origin.trim().replace(/\/$/, ''))
   .filter(Boolean);
+const CLIENT_ORIGINS = Array.from(new Set([...DEFAULT_CLIENT_ORIGINS, ...ENV_CLIENT_ORIGINS]));
 
 function isOriginAllowed(origin) {
   if (!origin) {
