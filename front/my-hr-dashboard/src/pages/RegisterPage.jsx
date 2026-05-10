@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { registerUser } from '../services/api';
 import { useCompanies } from '../hooks/useCompanies';
+import { useLanguage } from '../context/LanguageContext';
 import '../App.css';
 
 const RegisterPage = () => {
@@ -14,6 +15,7 @@ const RegisterPage = () => {
   const [loading, setLoading] = useState(false);
   const [isBouncing, setIsBouncing] = useState(false);
   const navigate = useNavigate();
+  const { t } = useLanguage();
   const {
     companies,
     loading: companiesLoading,
@@ -76,18 +78,18 @@ const RegisterPage = () => {
             />
           </svg>
         </div>
-        <h1 className="login-title">Create Account</h1>
-        <p className="login-subtitle">Start monitoring company wellness</p>
+        <h1 className="login-title">{t('createAccount', 'Create Account')}</h1>
+        <p className="login-subtitle">{t('startMonitoring', 'Start monitoring company wellness')}</p>
 
         <form onSubmit={handleRegister}>
-          <div className="role-toggle register-toggle" role="tablist" aria-label="Select role">
+          <div className="role-toggle register-toggle" role="tablist" aria-label={t('selectRole', 'Select role')}>
             <button
               className={`role-tab${role === 'hr' ? ' active' : ''}`}
               type="button"
               onClick={() => handleRoleChange('hr')}
               aria-pressed={role === 'hr'}
             >
-              HR Admin
+              {t('hrAdmin', 'HR Admin')}
             </button>
             <button
               className={`role-tab${role === 'employee' ? ' active' : ''}`}
@@ -95,7 +97,7 @@ const RegisterPage = () => {
               onClick={() => handleRoleChange('employee')}
               aria-pressed={role === 'employee'}
             >
-              Employee
+              {t('employee', 'Employee')}
             </button>
           </div>
 
@@ -103,7 +105,7 @@ const RegisterPage = () => {
 
           <div className="form-group">
             <label htmlFor="register-company">
-              Company name
+              {t('companyName', 'Company name')}
             </label>
             <div className="input-wrapper">
               <svg viewBox="0 0 24 24" fill="none" strokeWidth="1.8" aria-hidden="true">
@@ -119,7 +121,7 @@ const RegisterPage = () => {
                   required
                 >
                   <option value="" disabled>
-                    {companiesLoading ? 'Loading companies...' : 'Select a registered company name'}
+                    {companiesLoading ? t('loadingCompanies', 'Loading companies...') : t('selectCompany', 'Select a registered company name')}
                   </option>
                   {companies.map((item) => (
                     <option key={item.id} value={item.companyName}>
@@ -131,7 +133,7 @@ const RegisterPage = () => {
                 <input
                   id="register-company"
                   type="text"
-                  placeholder="Company name"
+                  placeholder={t('companyName', 'Company name')}
                   value={companyName}
                   onChange={(event) => setCompanyName(event.target.value)}
                   required
@@ -141,7 +143,7 @@ const RegisterPage = () => {
           </div>
 
           <div className="form-group">
-            <label htmlFor="register-username">Username</label>
+            <label htmlFor="register-username">{t('username', 'Username')}</label>
             <div className="input-wrapper">
               <svg viewBox="0 0 24 24" fill="none" strokeWidth="1.8" aria-hidden="true">
                 <path
@@ -154,7 +156,7 @@ const RegisterPage = () => {
               <input
                 id="register-username"
                 type="text"
-                placeholder="Username"
+                placeholder={t('username', 'Username')}
                 value={username}
                 onChange={(event) => setUsername(event.target.value)}
                 required
@@ -163,7 +165,7 @@ const RegisterPage = () => {
           </div>
 
           <div className="form-group">
-            <label htmlFor="register-password">Password</label>
+            <label htmlFor="register-password">{t('password', 'Password')}</label>
             <div className="input-wrapper password-wrapper">
               <svg viewBox="0 0 24 24" fill="none" strokeWidth="1.8" aria-hidden="true">
                 <rect x="5" y="10" width="14" height="10" rx="2" stroke="currentColor" />
@@ -172,7 +174,7 @@ const RegisterPage = () => {
               <input
                 id="register-password"
                 type={showPassword ? 'text' : 'password'}
-                placeholder="Password"
+                placeholder={t('password', 'Password')}
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
                 required
@@ -181,7 +183,7 @@ const RegisterPage = () => {
                 className="password-toggle"
                 type="button"
                 onClick={() => setShowPassword((value) => !value)}
-                aria-label={showPassword ? 'Hide password' : 'Show password'}
+                aria-label={showPassword ? t('hidePassword', 'Hide password') : t('showPassword', 'Show password')}
               >
                 <svg viewBox="0 0 24 24" fill="none" strokeWidth="1.8" aria-hidden="true">
                   <path
@@ -197,7 +199,7 @@ const RegisterPage = () => {
           {error && <div className="form-alert error">{error}</div>}
 
           <button className="signin-button" type="submit" disabled={loading || companySelectPending}>
-            {loading ? 'Creating...' : 'Register'}
+            {loading ? t('creating', 'Creating...') : t('register', 'Register')}
             <svg viewBox="0 0 24 24" fill="none" strokeWidth="1.8" aria-hidden="true">
               <path d="M5 12h14" stroke="currentColor" strokeLinecap="round" />
               <path d="M13 6l6 6-6 6" stroke="currentColor" strokeLinecap="round" />
@@ -206,9 +208,9 @@ const RegisterPage = () => {
         </form>
 
         <div className="register-link">
-          Already have an account?{' '}
+          {t('alreadyAccount', 'Already have an account?')}{' '}
           <Link className="link-bounce" to="/" onClick={handleLoginClick}>
-            Log In
+            {t('logIn', 'Log In')}
           </Link>
         </div>
       </div>

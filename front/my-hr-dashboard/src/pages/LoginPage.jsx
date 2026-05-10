@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { useLanguage } from '../context/LanguageContext';
 import '../App.css';
 
 const LoginPage = () => {
@@ -13,6 +14,7 @@ const LoginPage = () => {
   const [isBouncing, setIsBouncing] = useState(false);
   const navigate = useNavigate();
   const { login } = useAuth();
+  const { t } = useLanguage();
   const roleHome = {
     hr: '/dashboard',
     employee: '/employee',
@@ -63,16 +65,16 @@ const LoginPage = () => {
         </div>
 
         <div className="lumora-panel">
-          <h1 className="lumora-title">Welcome back</h1>
+          <h1 className="lumora-title">{t('welcomeBack', 'Welcome back')}</h1>
 
-          <div className="role-toggle" role="tablist" aria-label="Select role">
+          <div className="role-toggle" role="tablist" aria-label={t('selectRole', 'Select role')}>
             <button
               className={`role-tab${role === 'hr' ? ' active' : ''}`}
               type="button"
               onClick={() => setRole('hr')}
               aria-pressed={role === 'hr'}
             >
-              HR Admin
+              {t('hrAdmin', 'HR Admin')}
             </button>
             <button
               className={`role-tab${role === 'employee' ? ' active' : ''}`}
@@ -80,13 +82,13 @@ const LoginPage = () => {
               onClick={() => setRole('employee')}
               aria-pressed={role === 'employee'}
             >
-              Employee
+              {t('employee', 'Employee')}
             </button>
           </div>
 
           <form onSubmit={handleLogin} className="lumora-form">
             <label className="lumora-label" htmlFor="username">
-              Username
+              {t('username', 'Username')}
             </label>
             <input
               id="username"
@@ -99,7 +101,7 @@ const LoginPage = () => {
             />
 
             <label className="lumora-label" htmlFor="password">
-              Password
+              {t('password', 'Password')}
             </label>
             <div className="password-field">
               <input
@@ -115,7 +117,7 @@ const LoginPage = () => {
                 className="password-toggle"
                 type="button"
                 onClick={() => setShowPassword((value) => !value)}
-                aria-label={showPassword ? 'Hide password' : 'Show password'}
+                aria-label={showPassword ? t('hidePassword', 'Hide password') : t('showPassword', 'Show password')}
               >
                 <svg viewBox="0 0 24 24" fill="none" strokeWidth="1.8" aria-hidden="true">
                   <path
@@ -130,14 +132,14 @@ const LoginPage = () => {
             {error && <div className="form-alert error">{error}</div>}
 
             <button className="lumora-submit" type="submit" disabled={loading}>
-              {loading ? 'Signing in...' : 'Login'}
+              {loading ? t('signingIn', 'Signing in...') : t('login', 'Login')}
             </button>
           </form>
 
           <div className="lumora-register">
-            Need an account?{' '}
+            {t('needAccount', 'Need an account?')}{' '}
             <Link className="lumora-link" to="/register" onClick={handleRegisterClick}>
-              Register
+              {t('register', 'Register')}
             </Link>
           </div>
         </div>

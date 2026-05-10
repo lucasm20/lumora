@@ -1,11 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { useLanguage } from '../context/LanguageContext';
 import { getEmployees } from '../services/api';
 import '../App.css';
 
 const HrDashboardPage = () => {
   const { firebaseUser, userProfile, logout } = useAuth();
+  const { t } = useLanguage();
   const [employees, setEmployees] = useState([]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -49,38 +51,38 @@ const HrDashboardPage = () => {
     <div className="hr-shell">
       <header className="hr-topbar">
         <div>
-          <span className="hr-eyebrow">HR Platform</span>
-          <h1>Employee Access</h1>
+          <span className="hr-eyebrow">{t('hrPlatform', 'HR Platform')}</span>
+          <h1>{t('employeeAccess', 'Employee Access')}</h1>
           <p>{userProfile.companyName}</p>
         </div>
         <button className="ghost-button" type="button" onClick={handleLogout}>
-          Log out
+          {t('logout', 'Log out')}
         </button>
       </header>
 
       <main className="hr-content">
         <section className="hr-stat">
-          <span className="hr-stat-label">Registered employees</span>
+          <span className="hr-stat-label">{t('registeredEmployees', 'Registered employees')}</span>
           <strong>{employees.length}</strong>
         </section>
 
         <section className="employee-table-card">
           <div className="employee-table-header">
-            <h2>Employees</h2>
-            <span>{loading ? 'Loading...' : `${employees.length} records`}</span>
+            <h2>{t('employees', 'Employees')}</h2>
+            <span>{loading ? t('loading', 'Loading...') : t('recordCount', `${employees.length} records`, { count: employees.length })}</span>
           </div>
 
           {error && <div className="form-alert error">{error}</div>}
 
           <div className="employee-table">
             <div className="employee-row employee-heading">
-              <span>Username</span>
-              <span>Company</span>
-              <span>Role</span>
+              <span>{t('username', 'Username')}</span>
+              <span>{t('company', 'Company')}</span>
+              <span>{t('role', 'Role')}</span>
             </div>
 
             {!loading && employees.length === 0 && (
-              <div className="empty-state">No employees registered for this company.</div>
+              <div className="empty-state">{t('noRegisteredEmployees', 'No employees registered for this company.')}</div>
             )}
 
             {employees.map((employee) => (

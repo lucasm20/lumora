@@ -1,7 +1,15 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { jsPDF } from 'jspdf';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { getEmotionDistribution, getEmployees, getWeeklyEmotionTrend } from '../services/api';
+import { useLanguage } from '../context/LanguageContext';
+import {
+  getEmotionalIntensity,
+  getEmotionComparison,
+  getEmotionDistribution,
+  getEmployees,
+  getWeeklyEmotionTrend,
+} from '../services/api';
 import '../App.css';
 
 const EMOTION_COLORS = {
@@ -28,7 +36,7 @@ const emotionItems = [
   { key: 'drowsiness', label: 'DROWSINESS', display: 'Drowsiness', tone: EMOTION_COLORS.drowsiness, emoji: '\u{1F634}' },
 ];
 
-const periodOptions = ['1h', 'Today', 'Week', 'Month', 'Custom'];
+const periodOptions = ['1h', 'Today', 'Week', 'Month'];
 const weekdayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 const emotionAliases = {
@@ -61,12 +69,295 @@ const emptyTrendDays = weekdayLabels.map((label) => ({
   counts: { ...emptyEmotionCounts },
 }));
 
+const emptyEmotionComparison = {
+  current: { ...emptyEmotionCounts },
+  previous: null,
+  previousAvailable: false,
+  previousAvailableByEmotion: { ...emptyEmotionCounts },
+  maxValue: 0,
+};
+
+const emptyEmotionDistribution = {
+  counts: { ...emptyEmotionCounts },
+  percentages: { ...emptyEmotionCounts },
+  total: 0,
+};
+
+const emptyIntensityDays = weekdayLabels.map((label) => ({
+  label,
+  intensity: 0,
+  trend: 0,
+  total: 0,
+  intense: 0,
+}));
+
 function normalizeText(value) {
   return String(value || '').trim().toLowerCase();
 }
 
 function normalizeEmotion(value) {
   return emotionAliases[normalizeText(value)] || '';
+}
+
+function formatPercent(value) {
+  const safeValue = Number.isFinite(Number(value)) ? Number(value) : 0;
+  const rounded = Math.round(safeValue * 10) / 10;
+  return `${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)}%`;
+}
+
+function getCountsTotal(counts = {}) {
+  return Object.values(counts).reduce((sum, value) => sum + (Number(value) || 0), 0);
+}
+
+function getEmotionPercent(counts = {}, emotionKey) {
+  const total = getCountsTotal(counts);
+  return total ? ((Number(counts[emotionKey]) || 0) / total) * 100 : 0;
+}
+
+function normalizeMetricPercent(value) {
+  const numericValue = Number(value) || 0;
+  return numericValue <= 1 ? numericValue * 100 : numericValue;
+}
+
+function buildDominantVibeStyle(emotionStats) {
+  const activeItems = emotionItems
+    .map((emotion) => ({
+      ...emotion,
+      percentage: Number(emotionStats.percentages?.[emotion.key]) || 0,
+    }))
+    .filter((emotion) => emotion.percentage > 0);
+  const fallbackColor = EMOTION_COLORS.neutral;
+  const dominantColor = EMOTION_COLORS[emotionStats.dominantEmotion] || fallbackColor;
+
+  if (!activeItems.length) {
+    return {
+      '--vibe-gradient': `radial-gradient(circle at 30% 25%, rgba(255,255,255,0.62) 0 12%, transparent 36%), radial-gradient(circle at 35% 30%, ${fallbackColor} 0%, #c7d2fe 52%, #eef2ff 100%)`,
+      '--vibe-c1': fallbackColor,
+      '--vibe-c2': '#c7d2fe',
+      '--vibe-glow': 'rgba(147, 197, 253, 0.3)',
+    };
+  }
+
+  const positions = [
+    ['28%', '26%'],
+    ['72%', '30%'],
+    ['46%', '72%'],
+    ['22%', '68%'],
+    ['78%', '72%'],
+    ['52%', '42%'],
+    ['34%', '52%'],
+    ['66%', '54%'],
+    ['50%', '20%'],
+  ];
+  const layers = activeItems.map((emotion, index) => {
+    const [x, y] = positions[index % positions.length];
+    const size = Math.max(34, Math.min(74, 30 + emotion.percentage * 0.75));
+    return `radial-gradient(circle at ${x} ${y}, ${emotion.tone} 0%, ${emotion.tone} ${size * 0.42}%, transparent ${size}%)`;
+  });
+
+  return {
+    '--vibe-gradient': `radial-gradient(circle at 30% 25%, rgba(255,255,255,0.58) 0 11%, transparent 35%), ${layers.join(', ')}, linear-gradient(135deg, ${activeItems[0]?.tone || dominantColor}, ${activeItems[activeItems.length - 1]?.tone || dominantColor})`,
+    '--vibe-c1': activeItems[0]?.tone || dominantColor,
+    '--vibe-c2': activeItems[1]?.tone || dominantColor,
+    '--vibe-glow': `${dominantColor}38`,
+  };
+}
+
+function hexToRgb(hex) {
+  const cleanHex = String(hex || '#000000').replace('#', '');
+  const value = parseInt(cleanHex.length === 3
+    ? cleanHex.split('').map((char) => char + char).join('')
+    : cleanHex, 16);
+
+  return {
+    r: (value >> 16) & 255,
+    g: (value >> 8) & 255,
+    b: value & 255,
+  };
+}
+
+function setPdfColor(doc, hex) {
+  const { r, g, b } = hexToRgb(hex);
+  doc.setTextColor(r, g, b);
+  doc.setDrawColor(r, g, b);
+  doc.setFillColor(r, g, b);
+}
+
+function drawPdfCard(doc, x, y, width, height) {
+  doc.setFillColor(255, 255, 255);
+  doc.setDrawColor(226, 232, 240);
+  doc.roundedRect(x, y, width, height, 4, 4, 'FD');
+}
+
+function drawPdfTitle(doc, title, x, y) {
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(13);
+  doc.setTextColor(15, 23, 42);
+  doc.text(title, x, y);
+}
+
+function drawPdfAxes(doc, x, y, width, height) {
+  doc.setDrawColor(226, 232, 240);
+  doc.setLineWidth(0.2);
+
+  [0, 25, 50, 75, 100].forEach((tick) => {
+    const tickY = y + height - (tick / 100) * height;
+    doc.line(x, tickY, x + width, tickY);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7);
+    doc.setTextColor(100, 116, 139);
+    doc.text(formatPercent(tick), x - 12, tickY + 2);
+  });
+}
+
+function drawPdfLegend(doc, items, x, y, maxWidth = 180) {
+  let cursorX = x;
+  let cursorY = y;
+
+  items.forEach((item) => {
+    const itemWidth = doc.getTextWidth(item.label) + 9;
+
+    if (cursorX + itemWidth > x + maxWidth) {
+      cursorX = x;
+      cursorY += 5;
+    }
+
+    setPdfColor(doc, item.color);
+    doc.circle(cursorX + 1.5, cursorY - 1.4, 1.2, 'F');
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7);
+    doc.text(item.label, cursorX + 5, cursorY);
+    cursorX += itemWidth + 6;
+  });
+}
+
+function drawLineSeries(doc, points, color) {
+  if (points.length < 2) {
+    return;
+  }
+
+  setPdfColor(doc, color);
+  doc.setLineWidth(0.55);
+
+  points.forEach((point, index) => {
+    if (index > 0) {
+      const previous = points[index - 1];
+      doc.line(previous.x, previous.y, point.x, point.y);
+    }
+    doc.circle(point.x, point.y, 0.9, 'F');
+  });
+}
+
+function drawWeeklyTrendPdf(doc, weeklyTrend, x, y, width, height) {
+  drawPdfCard(doc, x, y, width, height);
+  drawPdfTitle(doc, 'Weekly Emotion Trend', x + 6, y + 9);
+  drawPdfLegend(
+    doc,
+    emotionItems.map((emotion) => ({ label: emotion.display, color: emotion.tone })),
+    x + 58,
+    y + 9,
+    width - 66
+  );
+
+  const chartX = x + 18;
+  const chartY = y + 22;
+  const chartW = width - 26;
+  const chartH = height - 34;
+  const days = weeklyTrend.days?.length ? weeklyTrend.days : emptyTrendDays;
+  drawPdfAxes(doc, chartX, chartY, chartW, chartH);
+
+  emotionItems.forEach((emotion) => {
+    const points = days.map((day, index) => {
+      const value = getEmotionPercent(day.counts, emotion.key);
+      const pointX = chartX + (chartW / Math.max(days.length - 1, 1)) * index;
+      const pointY = chartY + chartH - (value / 100) * chartH;
+      return { x: pointX, y: pointY };
+    });
+
+    drawLineSeries(doc, points, emotion.tone);
+  });
+
+  days.forEach((day, index) => {
+    const pointX = chartX + (chartW / Math.max(days.length - 1, 1)) * index;
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7);
+    doc.setTextColor(100, 116, 139);
+    doc.text(day.label, pointX - 3, chartY + chartH + 6);
+  });
+}
+
+function drawComparisonPdf(doc, comparison, x, y, width, height) {
+  drawPdfCard(doc, x, y, width, height);
+  drawPdfTitle(doc, 'Current vs 7 Days Ago', x + 6, y + 9);
+  drawPdfLegend(
+    doc,
+    [
+      { label: 'Current', color: '#4f46e5' },
+      { label: '7 Days Ago', color: '#c7d2fe' },
+    ],
+    x + width - 55,
+    y + 9,
+    50
+  );
+
+  const chartX = x + 18;
+  const chartY = y + 21;
+  const chartW = width - 28;
+  const chartH = height - 36;
+  const groupW = chartW / emotionItems.length;
+  const barW = Math.min(3.5, groupW * 0.24);
+  const currentTotal = getCountsTotal(comparison.current);
+  const previousTotal = comparison.previousAvailable && comparison.previous ? getCountsTotal(comparison.previous) : 0;
+
+  drawPdfAxes(doc, chartX, chartY, chartW, chartH);
+
+  emotionItems.forEach((emotion, index) => {
+    const current = currentTotal ? ((comparison.current?.[emotion.key] || 0) / currentTotal) * 100 : 0;
+    const previousAvailable = Boolean(comparison.previousAvailableByEmotion?.[emotion.key]);
+    const previous = previousAvailable && previousTotal ? ((comparison.previous?.[emotion.key] || 0) / previousTotal) * 100 : 0;
+    const groupX = chartX + groupW * index + groupW / 2;
+    const currentH = (current / 100) * chartH;
+    const previousH = (previous / 100) * chartH;
+
+    doc.setFillColor(79, 70, 229);
+    doc.roundedRect(groupX - barW - 1, chartY + chartH - currentH, barW, currentH, 1, 1, 'F');
+    if (previousAvailable && previousTotal) {
+      doc.setFillColor(199, 210, 254);
+      doc.roundedRect(groupX + 1, chartY + chartH - previousH, barW, previousH, 1, 1, 'F');
+    }
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(6);
+    doc.setTextColor(100, 116, 139);
+    doc.text(emotion.display.slice(0, 4), groupX - 4, chartY + chartH + 6);
+  });
+}
+
+function drawIntensityPdf(doc, days, x, y, width, height) {
+  drawPdfCard(doc, x, y, width, height);
+  drawPdfTitle(doc, 'Emotional Intensity', x + 6, y + 9);
+
+  const chartX = x + 18;
+  const chartY = y + 21;
+  const chartW = width - 28;
+  const chartH = height - 36;
+  const chartDays = days?.length ? days : emptyIntensityDays;
+  const groupW = chartW / Math.max(chartDays.length, 1);
+  const barW = Math.min(8, groupW * 0.56);
+
+  drawPdfAxes(doc, chartX, chartY, chartW, chartH);
+
+  chartDays.forEach((day, index) => {
+    const value = Math.max(0, Math.min(100, normalizeMetricPercent(day.intensity)));
+    const barHeight = (value / 100) * chartH;
+    const barX = chartX + groupW * index + (groupW - barW) / 2;
+
+    doc.setFillColor(253, 164, 175);
+    doc.roundedRect(barX, chartY + chartH - barHeight, barW, barHeight, 1.5, 1.5, 'F');
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7);
+    doc.setTextColor(100, 116, 139);
+    doc.text(day.label, barX + barW / 2 - 2.5, chartY + chartH + 6);
+  });
 }
 
 function getEmployeeLiveVibe(employee) {
@@ -86,6 +377,43 @@ function isEmployee(employee) {
 function isActiveEmployee(employee) {
   const status = normalizeText(employee?.status);
   return employee?.active !== false && employee?.disabled !== true && status !== 'inactive';
+}
+
+function getRecordDate(value) {
+  if (!value) {
+    return null;
+  }
+
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function getEmployeeActivityDate(employee) {
+  const timestamps = [
+    employee?.latestCameraFrameAt,
+    employee?.lastEmotionAt,
+    employee?.lastSync,
+    employee?.timestamp,
+    employee?.cameraUpdatedAt,
+    employee?.updatedAt,
+    employee?.createdAt,
+  ]
+    .map(getRecordDate)
+    .filter(Boolean);
+
+  if (!timestamps.length) {
+    return null;
+  }
+
+  return new Date(Math.max(...timestamps.map((date) => date.getTime())));
+}
+
+function formatTickerTime(date) {
+  return (date || new Date()).toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
 }
 
 function belongsToCurrentCompany(employee, userProfile) {
@@ -126,7 +454,103 @@ function buildSmoothPath(points) {
   }, '');
 }
 
-function WeeklyEmotionTrendChart({ days, maxValue }) {
+function describeDonutArc(cx, cy, radius, startAngle, endAngle) {
+  const start = {
+    x: cx + radius * Math.cos(startAngle),
+    y: cy + radius * Math.sin(startAngle),
+  };
+  const end = {
+    x: cx + radius * Math.cos(endAngle),
+    y: cy + radius * Math.sin(endAngle),
+  };
+  const largeArcFlag = endAngle - startAngle > Math.PI ? 1 : 0;
+
+  return `M ${start.x} ${start.y} A ${radius} ${radius} 0 ${largeArcFlag} 1 ${end.x} ${end.y}`;
+}
+
+function EmotionDistributionDonut({ stats }) {
+  const { t } = useLanguage();
+  const [activeEmotion, setActiveEmotion] = useState(null);
+  const total = Number(stats?.total) || getCountsTotal(stats?.counts);
+  const dominant = emotionItems.reduce(
+    (current, item) =>
+      (stats?.counts?.[item.key] || 0) > current.count
+        ? { ...item, count: stats.counts[item.key] || 0 }
+        : current,
+    { display: t('noData', 'No data'), key: '', tone: '#94a3b8', count: 0 }
+  );
+  let cursor = -Math.PI / 2;
+  const segments = emotionItems
+    .map((emotion) => {
+      const records = Number(stats?.counts?.[emotion.key]) || 0;
+      const percentage = total ? (records / total) * 100 : 0;
+      const start = cursor;
+      const end = cursor + (percentage / 100) * Math.PI * 2;
+      cursor = end;
+
+      return {
+        ...emotion,
+        records,
+        percentage,
+        start,
+        end,
+      };
+    })
+    .filter((segment) => segment.records > 0);
+
+  return (
+    <div className="dashboard-donut-wrap" onMouseLeave={() => setActiveEmotion(null)}>
+      <div className="dashboard-donut-stage">
+        <svg className="dashboard-donut" viewBox="0 0 190 190" role="img" aria-label="Company emotion distribution donut">
+          <circle className="dashboard-donut-track" cx="95" cy="95" r="62" />
+          {segments.map((segment) => (
+            <path
+              className="dashboard-donut-segment"
+              key={segment.key}
+              d={describeDonutArc(95, 95, 62, segment.start, segment.end)}
+              stroke={segment.tone}
+              onMouseEnter={() => setActiveEmotion(segment)}
+              onFocus={() => setActiveEmotion(segment)}
+              onBlur={() => setActiveEmotion(null)}
+              tabIndex={0}
+            />
+          ))}
+          <circle className="dashboard-donut-hole" cx="95" cy="95" r="38" />
+          <text className="dashboard-donut-center-label" x="95" y="91">
+            {dominant.key ? t(`emotion.${dominant.display}`, dominant.display) : t('noData', 'No data')}
+          </text>
+          <text className="dashboard-donut-center-value" x="95" y="109">
+            {total} {t('records', 'records')}
+          </text>
+        </svg>
+
+        {activeEmotion && (
+          <div className="dashboard-donut-tooltip">
+            <strong>{t(`emotion.${activeEmotion.display}`, activeEmotion.display)}</strong>
+            <span>{t('percentage', 'Percentage')}: {formatPercent(activeEmotion.percentage)}</span>
+            <span>{t('records', 'Records')}: {activeEmotion.records}</span>
+          </div>
+        )}
+      </div>
+
+      <div className="dashboard-donut-legend">
+        {emotionItems.map((emotion) => {
+          const percentage = stats?.percentages?.[emotion.key] || 0;
+
+          return (
+            <span key={emotion.key} style={{ color: emotion.tone }}>
+              <i style={{ backgroundColor: emotion.tone }} />
+              {t(`emotion.${emotion.display}`, emotion.display)} {formatPercent(percentage)}
+            </span>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function WeeklyEmotionTrendChart({ days }) {
+  const { t } = useLanguage();
   const [activeIndex, setActiveIndex] = useState(2);
   const [showTooltip, setShowTooltip] = useState(false);
   const chartDays = days?.length ? days : emptyTrendDays;
@@ -135,9 +559,8 @@ function WeeklyEmotionTrendChart({ days, maxValue }) {
   const padding = { top: 22, right: 24, bottom: 34, left: 46 };
   const innerWidth = width - padding.left - padding.right;
   const innerHeight = height - padding.top - padding.bottom;
-  const tickStep = Math.max(1, Math.ceil(Math.max(maxValue, 4) / 4));
-  const chartMax = tickStep * 4;
-  const ticks = Array.from({ length: 5 }, (_, index) => chartMax - index * tickStep);
+  const chartMax = 100;
+  const ticks = [100, 75, 50, 25, 0];
   const activeDay = chartDays[activeIndex] || chartDays[0];
   const activeX =
     chartDays.length > 1
@@ -145,7 +568,7 @@ function WeeklyEmotionTrendChart({ days, maxValue }) {
       : padding.left;
 
   const getPoint = (dayIndex, emotionKey) => {
-    const value = chartDays[dayIndex]?.counts?.[emotionKey] || 0;
+    const value = getEmotionPercent(chartDays[dayIndex]?.counts, emotionKey);
     const x =
       chartDays.length > 1
         ? padding.left + (innerWidth / (chartDays.length - 1)) * dayIndex
@@ -168,7 +591,7 @@ function WeeklyEmotionTrendChart({ days, maxValue }) {
           return (
             <g key={tick}>
               <text className="trend-y-label" x={18} y={y + 4}>
-                {tick}
+                {formatPercent(tick)}
               </text>
               <line className="trend-grid-line" x1={padding.left} x2={width - padding.right} y1={y} y2={y} />
             </g>
@@ -182,7 +605,7 @@ function WeeklyEmotionTrendChart({ days, maxValue }) {
               : padding.left;
           return (
             <text className="trend-x-label" key={day.label} x={x} y={height - 9}>
-              {day.label}
+              {t(`weekday.${day.label}`, day.label)}
             </text>
           );
         })}
@@ -250,10 +673,10 @@ function WeeklyEmotionTrendChart({ days, maxValue }) {
                   : 'translateX(-50%)',
           }}
         >
-          <strong>{activeDay?.label || 'Mon'}</strong>
+          <strong>{t(`weekday.${activeDay?.label || 'Mon'}`, activeDay?.label || 'Mon')}</strong>
           {emotionItems.map((emotion) => (
             <span key={emotion.key} style={{ color: emotion.tone }}>
-              {emotion.display}: {activeDay?.counts?.[emotion.key] || 0}
+              {t(`emotion.${emotion.display}`, emotion.display)}: {formatPercent(getEmotionPercent(activeDay?.counts, emotion.key))}
             </span>
           ))}
         </div>
@@ -262,32 +685,232 @@ function WeeklyEmotionTrendChart({ days, maxValue }) {
   );
 }
 
+function CurrentVsPreviousChart({ comparison }) {
+  const { t } = useLanguage();
+  const [activeKey, setActiveKey] = useState(null);
+  const data = comparison || emptyEmotionComparison;
+  const width = 640;
+  const height = 220;
+  const padding = { top: 18, right: 18, bottom: 42, left: 34 };
+  const innerWidth = width - padding.left - padding.right;
+  const innerHeight = height - padding.top - padding.bottom;
+  const chartMax = 100;
+  const ticks = [100, 75, 50, 25, 0];
+  const groupWidth = innerWidth / emotionItems.length;
+  const barWidth = data.previousAvailable ? Math.min(16, groupWidth * 0.22) : Math.min(18, groupWidth * 0.38);
+  const activeEmotion = emotionItems.find((emotion) => emotion.key === activeKey);
+  const currentTotal = getCountsTotal(data.current);
+  const previousTotal = currentTotal && data.previousAvailable && data.previous ? getCountsTotal(data.previous) : 0;
+
+  const getBarHeight = (value) => (value / chartMax) * innerHeight;
+
+  return (
+    <div className="comparison-chart-inner" onMouseLeave={() => setActiveKey(null)}>
+      <svg className="comparison-svg" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={t('currentVsPrevious', 'Current vs 7 days ago')}>
+        {ticks.map((tick) => {
+          const y = padding.top + innerHeight - (tick / chartMax) * innerHeight;
+          return (
+            <g key={tick}>
+              <text className="comparison-y-label" x={10} y={y + 4}>
+                {formatPercent(tick)}
+              </text>
+              <line className="comparison-grid-line" x1={padding.left} x2={width - padding.right} y1={y} y2={y} />
+            </g>
+          );
+        })}
+
+        {emotionItems.map((emotion, index) => {
+          const currentValue = currentTotal ? ((data.current?.[emotion.key] || 0) / currentTotal) * 100 : 0;
+          const previousEmotionAvailable = currentTotal > 0 && Boolean(data.previousAvailableByEmotion?.[emotion.key]);
+          const previousValue =
+            previousEmotionAvailable && previousTotal
+              ? ((data.previous?.[emotion.key] || 0) / previousTotal) * 100
+              : null;
+          const groupX = padding.left + groupWidth * index + groupWidth / 2;
+          const currentHeight = getBarHeight(currentValue);
+          const previousHeight = previousValue === null ? 0 : getBarHeight(previousValue);
+          const currentX = data.previousAvailable ? groupX - barWidth - 2 : groupX - barWidth / 2;
+          const previousX = groupX + 2;
+
+          return (
+            <g
+              className="comparison-group"
+              key={emotion.key}
+              onMouseEnter={() => setActiveKey(emotion.key)}
+              onFocus={() => setActiveKey(emotion.key)}
+              onBlur={() => setActiveKey(null)}
+              tabIndex={0}
+            >
+              <rect
+                className="comparison-hit"
+                x={padding.left + groupWidth * index}
+                y={padding.top}
+                width={groupWidth}
+                height={innerHeight}
+              />
+              <rect
+                className="comparison-bar current"
+                x={currentX}
+                y={padding.top + innerHeight - currentHeight}
+                width={barWidth}
+                height={currentHeight}
+                rx="5"
+              />
+              {previousValue !== null && (
+                <rect
+                  className="comparison-bar previous"
+                  x={previousX}
+                  y={padding.top + innerHeight - previousHeight}
+                  width={barWidth}
+                  height={previousHeight}
+                  rx="5"
+                />
+              )}
+              <text className="comparison-x-label" x={groupX} y={height - 12}>
+                {t(`emotion.${emotion.display}`, emotion.display).slice(0, 4)}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+
+      <div className="comparison-legend">
+        <span><i className="current" /> {t('current', 'Current')}</span>
+        {currentTotal > 0 && <span><i className="previous" /> {t('previous', '7 Days Ago')}</span>}
+      </div>
+
+      {activeEmotion && (
+        <div
+          className="comparison-tooltip"
+          style={{
+            left: `${((padding.left + groupWidth * emotionItems.findIndex((item) => item.key === activeKey) + groupWidth / 2) / width) * 100}%`,
+          }}
+        >
+          <strong>{t(`emotion.${activeEmotion.display}`, activeEmotion.display)}</strong>
+          <span>{t('current', 'Current')}: {formatPercent(currentTotal ? ((data.current?.[activeEmotion.key] || 0) / currentTotal) * 100 : 0)}</span>
+          <span>
+            {t('previous', '7 Days Ago')}:{' '}
+            {data.previousAvailableByEmotion?.[activeEmotion.key] && previousTotal
+              ? formatPercent(((data.previous?.[activeEmotion.key] || 0) / previousTotal) * 100)
+              : t('noData', 'No data')}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EmotionalIntensityChart({ days }) {
+  const { t } = useLanguage();
+  const [activeIndex, setActiveIndex] = useState(null);
+  const chartDays = days?.length ? days : emptyIntensityDays;
+  const width = 640;
+  const height = 220;
+  const padding = { top: 18, right: 24, bottom: 34, left: 38 };
+  const innerWidth = width - padding.left - padding.right;
+  const innerHeight = height - padding.top - padding.bottom;
+  const chartMax = 100;
+  const ticks = [100, 75, 50, 25, 0];
+  const activeDay = activeIndex === null ? null : chartDays[activeIndex];
+  const groupWidth = innerWidth / Math.max(chartDays.length, 1);
+  const barWidth = Math.min(30, groupWidth * 0.56);
+  const activeX =
+    activeIndex === null
+      ? padding.left
+      : padding.left + groupWidth * activeIndex + groupWidth / 2;
+
+  const getBarHeight = (value) => (value / chartMax) * innerHeight;
+
+  return (
+    <div className="intensity-chart-inner" onMouseLeave={() => setActiveIndex(null)}>
+      <svg className="intensity-svg" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={t('emotionalIntensity', 'Emotional intensity')}>
+        {ticks.map((tick) => {
+          const y = padding.top + innerHeight - (tick / chartMax) * innerHeight;
+
+          return (
+            <g key={tick}>
+              <text className="intensity-y-label" x={10} y={y + 4}>
+                {formatPercent(tick)}
+              </text>
+              <line className="intensity-grid-line" x1={padding.left} x2={width - padding.right} y1={y} y2={y} />
+            </g>
+          );
+        })}
+
+        {chartDays.map((day, index) => {
+          const intensityValue = normalizeMetricPercent(day.intensity);
+          const barHeight = getBarHeight(intensityValue);
+          const x = padding.left + groupWidth * index + (groupWidth - barWidth) / 2;
+
+          return (
+            <g
+              className="intensity-day-group"
+              key={day.label}
+              onMouseEnter={() => setActiveIndex(index)}
+              onFocus={() => setActiveIndex(index)}
+              onBlur={() => setActiveIndex(null)}
+              tabIndex={0}
+            >
+              <rect
+                className="intensity-hit"
+                x={padding.left + groupWidth * index}
+                y={padding.top}
+                width={groupWidth}
+                height={innerHeight}
+              />
+              <rect
+                className="intensity-bar"
+                x={x}
+                y={padding.top + innerHeight - barHeight}
+                width={barWidth}
+                height={barHeight}
+                rx="6"
+              />
+              <text className="intensity-x-label" x={x + barWidth / 2} y={height - 10}>
+                {t(`weekday.${day.label}`, day.label)}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+
+      {activeDay && (
+        <div
+          className="intensity-live-tooltip"
+          style={{
+            left: `${(activeX / width) * 100}%`,
+            transform:
+              activeIndex === 0
+                ? 'translateX(0)'
+                : activeIndex === chartDays.length - 1
+                  ? 'translateX(-100%)'
+                  : 'translateX(-50%)',
+          }}
+        >
+          <strong>{t(`weekday.${activeDay.label}`, activeDay.label)}</strong>
+          <span className="i-value">{t('emotionalIntensity', 'Emotional Intensity')}: {formatPercent(normalizeMetricPercent(activeDay.intensity))}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const DashboardPage = () => {
   const { firebaseUser, userProfile, logout } = useAuth();
+  const { t, toggleLanguage } = useLanguage();
   const navigate = useNavigate();
   const [employees, setEmployees] = useState([]);
+  const [dashboardLoadedAt, setDashboardLoadedAt] = useState(() => new Date());
   const [selectedPeriod, setSelectedPeriod] = useState('Week');
   const [weeklyTrend, setWeeklyTrend] = useState({
     days: emptyTrendDays,
     maxValue: 0,
   });
   const [emotionDistribution, setEmotionDistribution] = useState(null);
+  const [emotionComparison, setEmotionComparison] = useState(emptyEmotionComparison);
+  const [emotionalIntensity, setEmotionalIntensity] = useState(emptyIntensityDays);
   const [dashboardError, setDashboardError] = useState('');
-
-  const emotionPalette = useMemo(
-    () => ({
-      happy: { c1: '#fbbf24', c2: '#fb923c', c3: '#fde68a', glow: 'rgba(251, 191, 36, 0.35)' },
-      neutral: { c1: '#93c5fd', c2: '#a5b4fc', c3: '#cbd5f5', glow: 'rgba(147, 197, 253, 0.3)' },
-      stress: { c1: '#f59e0b', c2: '#f97316', c3: '#fde68a', glow: 'rgba(245, 158, 11, 0.32)' },
-      sad: { c1: '#60a5fa', c2: '#818cf8', c3: '#c7d2fe', glow: 'rgba(96, 165, 250, 0.32)' },
-      angry: { c1: '#f87171', c2: '#ef4444', c3: '#fecaca', glow: 'rgba(248, 113, 113, 0.35)' },
-      fear: { c1: '#f43f5e', c2: '#be123c', c3: '#fecdd3', glow: 'rgba(244, 63, 94, 0.35)' },
-      surprise: { c1: '#22c55e', c2: '#16a34a', c3: '#bbf7d0', glow: 'rgba(34, 197, 94, 0.3)' },
-      disgust: { c1: '#34d399', c2: '#10b981', c3: '#a7f3d0', glow: 'rgba(52, 211, 153, 0.3)' },
-      drowsiness: { c1: '#a855f7', c2: '#7c3aed', c3: '#ddd6fe', glow: 'rgba(168, 85, 247, 0.3)' },
-    }),
-    []
-  );
+  const [exportingPdf, setExportingPdf] = useState(false);
 
   useEffect(() => {
     let isMounted = true;
@@ -298,25 +921,49 @@ const DashboardPage = () => {
           setEmployees([]);
           setWeeklyTrend({ days: emptyTrendDays, maxValue: 0 });
           setEmotionDistribution(null);
+          setEmotionComparison(emptyEmotionComparison);
+          setEmotionalIntensity(emptyIntensityDays);
         }
         return;
       }
 
       try {
         const token = await firebaseUser.getIdToken();
-        const [employeesData, trendData, distributionData] = await Promise.all([
+        const [employeesData, trendData, distributionData, comparisonData, intensityData] = await Promise.all([
           getEmployees(token),
           getWeeklyEmotionTrend(token, selectedPeriod),
-          getEmotionDistribution(token).catch(() => null),
+          getEmotionDistribution(token, selectedPeriod).catch(() => emptyEmotionDistribution),
+          getEmotionComparison(token, selectedPeriod).catch(() => null),
+          getEmotionalIntensity(token, selectedPeriod).catch(() => null),
         ]);
 
         if (isMounted) {
           setEmployees(Array.isArray(employeesData.employees) ? employeesData.employees : []);
+          setDashboardLoadedAt(new Date());
           setWeeklyTrend({
             days: Array.isArray(trendData.days) ? trendData.days : emptyTrendDays,
             maxValue: Number(trendData.maxValue) || 0,
           });
           setEmotionDistribution(distributionData);
+          const currentComparison = {
+            ...emptyEmotionCounts,
+            ...(comparisonData?.current || {}),
+          };
+          const hasCurrentComparison = getCountsTotal(currentComparison) > 0;
+
+          setEmotionComparison({
+            current: currentComparison,
+            previous: hasCurrentComparison && comparisonData?.previous ? { ...emptyEmotionCounts, ...comparisonData.previous } : null,
+            previousAvailable: hasCurrentComparison && Boolean(comparisonData?.previousAvailable),
+            previousAvailableByEmotion: hasCurrentComparison
+              ? {
+                  ...emptyEmotionCounts,
+                  ...(comparisonData?.previousAvailableByEmotion || {}),
+                }
+              : { ...emptyEmotionCounts },
+            maxValue: hasCurrentComparison ? Number(comparisonData?.maxValue) || 0 : 0,
+          });
+          setEmotionalIntensity(Array.isArray(intensityData?.days) ? intensityData.days : emptyIntensityDays);
           setDashboardError('');
         }
       } catch (requestError) {
@@ -358,6 +1005,15 @@ const DashboardPage = () => {
     });
   }, [employees, userProfile]);
 
+  const tickerTime = useMemo(() => {
+    const latestActivity = companyEmployees
+      .map(getEmployeeActivityDate)
+      .filter(Boolean)
+      .reduce((latest, date) => (!latest || date > latest ? date : latest), null);
+
+    return formatTickerTime(latestActivity || dashboardLoadedAt);
+  }, [companyEmployees, dashboardLoadedAt]);
+
   const emotionStats = useMemo(() => {
     if (emotionDistribution?.percentages && emotionDistribution?.counts) {
       const counts = {
@@ -381,45 +1037,189 @@ const DashboardPage = () => {
       };
     }
 
-    const counts = { ...emptyEmotionCounts };
-
-    companyEmployees.forEach((employee) => {
-      const emotion = getEmployeeLiveVibe(employee);
-
-      if (emotion) {
-        counts[emotion] += 1;
-      }
-    });
-
-    const total = Object.values(counts).reduce((sum, value) => sum + value, 0);
-    const percentages = emotionItems.reduce((nextPercentages, item) => {
-      nextPercentages[item.key] = total ? Math.round((counts[item.key] / total) * 100) : 0;
-      return nextPercentages;
-    }, {});
-
-    const dominant = emotionItems.reduce(
-      (current, item) => (counts[item.key] > current.count ? { key: item.key, count: counts[item.key] } : current),
-      { key: 'neutral', count: 0 }
-    );
-
     return {
-      counts,
-      percentages,
-      total,
-      dominantEmotion: dominant.count > 0 ? dominant.key : 'neutral',
+      counts: { ...emptyEmotionCounts },
+      percentages: { ...emptyEmotionCounts },
+      total: 0,
+      dominantEmotion: 'neutral',
     };
-  }, [companyEmployees, emotionDistribution]);
+  }, [emotionDistribution]);
 
 
-  const dominantStyle = useMemo(() => {
-    const palette = emotionPalette[emotionStats.dominantEmotion] || emotionPalette.neutral;
-    return {
-      '--vibe-c1': palette.c1,
-      '--vibe-c2': palette.c2,
-      '--vibe-c3': palette.c3,
-      '--vibe-glow': palette.glow,
-    };
-  }, [emotionStats.dominantEmotion, emotionPalette]);
+  const dominantStyle = useMemo(() => buildDominantVibeStyle(emotionStats), [emotionStats]);
+
+  const comparisonStats = useMemo(() => {
+    return emotionComparison;
+  }, [emotionComparison]);
+
+  const handleExportPdf = async () => {
+    if (!firebaseUser) {
+      return;
+    }
+
+    setExportingPdf(true);
+
+    try {
+      const token = await firebaseUser.getIdToken();
+      const [employeesData, trendData, distributionData, comparisonData, intensityData] = await Promise.all([
+        getEmployees(token),
+        getWeeklyEmotionTrend(token, selectedPeriod),
+        getEmotionDistribution(token, selectedPeriod).catch(() => emptyEmotionDistribution),
+        getEmotionComparison(token, selectedPeriod).catch(() => null),
+        getEmotionalIntensity(token, selectedPeriod).catch(() => null),
+      ]);
+      const latestEmployees = Array.isArray(employeesData.employees) ? employeesData.employees : [];
+      const latestCompanyEmployees = latestEmployees.filter((employee) => {
+        return isEmployee(employee) && isActiveEmployee(employee) && belongsToCurrentCompany(employee, userProfile);
+      });
+      const latestWeeklyTrend = {
+        days: Array.isArray(trendData.days) ? trendData.days : emptyTrendDays,
+        maxValue: Number(trendData.maxValue) || 0,
+      };
+      const latestEmotionStats = (() => {
+        if (distributionData?.percentages && distributionData?.counts) {
+          const counts = {
+            ...emptyEmotionCounts,
+            ...distributionData.counts,
+          };
+          const percentages = emotionItems.reduce((nextPercentages, item) => {
+            nextPercentages[item.key] = Number(distributionData.percentages[item.key]) || 0;
+            return nextPercentages;
+          }, {});
+          const dominant = emotionItems.reduce(
+            (current, item) => (counts[item.key] > current.count ? { key: item.key, count: counts[item.key] } : current),
+            { key: 'neutral', count: 0 }
+          );
+
+          return {
+            counts,
+            percentages,
+            total: Number(distributionData.total) || 0,
+            dominantEmotion: dominant.count > 0 ? dominant.key : 'neutral',
+          };
+        }
+
+        return {
+          counts: { ...emptyEmotionCounts },
+          percentages: { ...emptyEmotionCounts },
+          total: 0,
+          dominantEmotion: 'neutral',
+        };
+      })();
+      const latestCurrentComparison = {
+        ...emptyEmotionCounts,
+        ...(comparisonData?.current || {}),
+      };
+      const latestHasCurrentComparison = getCountsTotal(latestCurrentComparison) > 0;
+      const latestComparison = {
+        current: latestCurrentComparison,
+        previous: latestHasCurrentComparison && comparisonData?.previous ? { ...emptyEmotionCounts, ...comparisonData.previous } : null,
+        previousAvailable: latestHasCurrentComparison && Boolean(comparisonData?.previousAvailable),
+        previousAvailableByEmotion: latestHasCurrentComparison
+          ? {
+              ...emptyEmotionCounts,
+              ...(comparisonData?.previousAvailableByEmotion || {}),
+            }
+          : { ...emptyEmotionCounts },
+        maxValue: latestHasCurrentComparison ? Number(comparisonData?.maxValue) || 0 : 0,
+      };
+      const latestIntensity = Array.isArray(intensityData?.days) ? intensityData.days : emptyIntensityDays;
+
+      setEmployees(latestEmployees);
+      setWeeklyTrend(latestWeeklyTrend);
+      setEmotionDistribution(distributionData);
+      setEmotionComparison(latestComparison);
+      setEmotionalIntensity(latestIntensity);
+
+      const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+      const generatedAt = new Date();
+      const companyName = userProfile?.companyName || 'Company';
+      const dominantVibe =
+        emotionItems.find((emotion) => emotion.key === latestEmotionStats.dominantEmotion)?.display || 'Neutral';
+      const safeCompanyName = companyName
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/(^-|-$)/g, '') || 'company';
+      const dateStamp = generatedAt.toISOString().slice(0, 10);
+
+      doc.setFillColor(248, 250, 252);
+      doc.rect(0, 0, 210, 297, 'F');
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(22);
+      doc.setTextColor(15, 23, 42);
+      doc.text('Dashboard', 14, 20);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(9);
+      doc.setTextColor(100, 116, 139);
+      doc.text('Lumora AI', 14, 27);
+      doc.text(`Company: ${companyName}`, 14, 33);
+      doc.text(`Generated: ${generatedAt.toLocaleString()}`, 14, 39);
+
+      drawPdfCard(doc, 14, 48, 86, 26);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8);
+      doc.setTextColor(100, 116, 139);
+      doc.text('TOTAL EMPLOYEES', 20, 58);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(18);
+      doc.setTextColor(15, 23, 42);
+      doc.text(String(latestCompanyEmployees.length), 20, 68);
+
+      drawPdfCard(doc, 110, 48, 86, 26);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8);
+      doc.setTextColor(100, 116, 139);
+      doc.text('DOMINANT VIBE', 116, 58);
+      setPdfColor(doc, EMOTION_COLORS[latestEmotionStats.dominantEmotion] || EMOTION_COLORS.neutral);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(18);
+      doc.text(dominantVibe, 116, 68);
+
+      drawPdfCard(doc, 14, 82, 182, 44);
+      drawPdfTitle(doc, 'Emotion Distribution', 20, 92);
+      const distributionX = 22;
+      const distributionY = 104;
+      emotionItems.forEach((emotion, index) => {
+        const col = index % 3;
+        const row = Math.floor(index / 3);
+        const itemX = distributionX + col * 58;
+        const itemY = distributionY + row * 8;
+        const percentage = latestEmotionStats.percentages[emotion.key] || 0;
+
+        setPdfColor(doc, emotion.tone);
+        doc.circle(itemX, itemY - 1.5, 1.5, 'F');
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(8);
+        doc.text(`${emotion.display}: ${formatPercent(percentage)}`, itemX + 5, itemY);
+      });
+
+      drawWeeklyTrendPdf(doc, latestWeeklyTrend, 14, 136, 182, 88);
+
+      doc.addPage();
+      doc.setFillColor(248, 250, 252);
+      doc.rect(0, 0, 210, 297, 'F');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(16);
+      doc.setTextColor(15, 23, 42);
+      doc.text('Dashboard Analytics', 14, 20);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(9);
+      doc.setTextColor(100, 116, 139);
+      doc.text(`${companyName} · ${generatedAt.toLocaleDateString()}`, 14, 27);
+
+      drawComparisonPdf(doc, latestComparison, 14, 38, 182, 96);
+      drawIntensityPdf(doc, latestIntensity, 14, 148, 182, 96);
+
+      doc.save(`lumora-dashboard-${safeCompanyName}-${dateStamp}.pdf`);
+      setDashboardError('');
+    } catch (error) {
+      setDashboardError(error.message || 'Could not export dashboard PDF.');
+    } finally {
+      setExportingPdf(false);
+    }
+  };
 
   const handleLogout = async () => {
     await logout();
@@ -446,7 +1246,7 @@ const DashboardPage = () => {
           <button
             className="sidebar-icon"
             type="button"
-            data-label="Insights Hub"
+            data-label={t('insightsHub', 'Insights Hub')}
             onClick={() => navigate('/insights')}
           >
             <span className="icon-shield">
@@ -458,7 +1258,7 @@ const DashboardPage = () => {
           className="sidebar-icon logout-icon"
           type="button"
           onClick={handleLogout}
-          data-label="Log out"
+          data-label={t('logout', 'Log out')}
         >
           <span className="icon-arrow" />
         </button>
@@ -469,31 +1269,34 @@ const DashboardPage = () => {
           <div>
             <h1 className="dashboard-title">EYEAI</h1>
             <p className="dashboard-subtitle">
-              {userProfile?.companyName} · signed in as {userProfile?.username}
+              {userProfile?.companyName} - {t('signedInAs', 'signed in as')} {userProfile?.username}
             </p>
           </div>
           <div className="dashboard-actions">
-            <button className="ghost-button" type="button">
+            <button className="ghost-button" type="button" onClick={toggleLanguage}>
               <span className="globe-icon" /> Language
             </button>
           </div>
         </header>
         <section className="dashboard-content">
           <div className="card-panel mini-card">
-          <div className="mini-icon" />
+          <div className="mini-people-icon" aria-hidden="true">
+            <span className="mini-person main" />
+            <span className="mini-person side left" />
+            <span className="mini-person side right" />
+          </div>
           <div>
             <span className="mini-value">{companyEmployees.length}</span>
-            <span className="mini-label">TOTAL EMPLOYEES</span>
+            <span className="mini-label">{t('totalEmployees', 'TOTAL EMPLOYEES')}</span>
           </div>
-          <span className="mini-live">LIVE</span>
-          <div className="mini-ring" />
+          <span className="mini-live">{t('live', 'LIVE')}</span>
           </div>
 
           <div className="card-panel dominant-card">
           <div className="dominant-header">
             <div>
-              <h2>Dominant Vibe</h2>
-              <p>Evolving organic pattern</p>
+              <h2>{t('dominantVibe', 'Dominant Vibe')}</h2>
+              <p>{t('evolvingPattern', 'Evolving organic pattern')}</p>
             </div>
             <div className="dominant-filters">
               {periodOptions.map((period) => (
@@ -503,10 +1306,17 @@ const DashboardPage = () => {
                   key={period}
                   onClick={() => setSelectedPeriod(period)}
                 >
-                  {period}
+                  {t(`period.${period}`, period)}
                 </button>
               ))}
-              <button className="export-button" type="button">Export as PDF</button>
+              <button
+                className="export-button"
+                type="button"
+                onClick={handleExportPdf}
+                disabled={exportingPdf}
+              >
+                {exportingPdf ? t('exporting', 'Exporting...') : t('exportPdf', 'Export as PDF')}
+              </button>
             </div>
           </div>
           <div className="dominant-body">
@@ -517,7 +1327,7 @@ const DashboardPage = () => {
                 <span />
                 <span />
               </div>
-              <span>Live monitoring active</span>
+              <span>{t('liveMonitoringActive', 'Live monitoring active')}</span>
             </div>
           </div>
           </div>
@@ -525,12 +1335,12 @@ const DashboardPage = () => {
           <div className="card-panel ticker-card">
           <div className="ticker-header">
             <span className="ticker-icon">⚡</span>
-            <span>LIVE TICKER</span>
+            <span>{t('liveTicker', 'LIVE TICKER')}</span>
           </div>
           <div className="ticker-item">
-            <span className="ticker-pill">INFO</span>
-            <span>{dashboardError || 'System connected. Monitoring live streams...'}</span>
-            <span className="ticker-time">01:35</span>
+            <span className="ticker-pill">{t('info', 'INFO')}</span>
+            <span>{dashboardError || t('systemConnected', 'System connected. Monitoring live streams...')}</span>
+            <span className="ticker-time">{tickerTime}</span>
           </div>
           </div>
         </section>
@@ -545,7 +1355,7 @@ const DashboardPage = () => {
               <span className="emotion-emoji">{item.emoji}</span>
               <span className="emotion-value">{percentage}%</span>
             </div>
-            <span className="emotion-label">{item.label}</span>
+            <span className="emotion-label">{t(`emotion.${item.label}`, item.label)}</span>
             <span
               className="emotion-bar"
               style={{
@@ -563,36 +1373,26 @@ const DashboardPage = () => {
           <div className="macro-title">
             <span className="macro-icon" />
             <div>
-              <h2>Macro Sentiment Analytics</h2>
-              <p>Long-term behavioral trends and emotional contagion mapping</p>
+              <h2>{t('macroSentimentAnalytics', 'Macro Sentiment Analytics')}</h2>
+              <p>{t('macroSentimentSubtitle', 'Long-term behavioral trends and emotional contagion mapping')}</p>
             </div>
           </div>
-          <button className="ghost-button" type="button">
-            <span className="globe-icon" /> Language
-          </button>
         </div>
 
         <div className="macro-grid">
           <div className="macro-card emotion-distribution-card">
-            <h3>Emotion Distribution</h3>
-            <div className="emotion-distribution">
-              {emotionItems.map((emotion) => (
-                <span className="emotion" key={emotion.key} style={{ color: emotion.tone }}>
-                  <i style={{ backgroundColor: emotion.tone }} />
-                  {emotion.display}
-                </span>
-              ))}
-            </div>
+            <h3>{t('emotionDistribution', 'Emotion Distribution')}</h3>
+            <EmotionDistributionDonut stats={emotionStats} />
           </div>
 
           <div className="macro-card trend-card">
             <div className="trend-card-header">
-              <h3>Weekly Emotion Trend</h3>
+              <h3>{t('weeklyEmotionTrend', 'Weekly Emotion Trend')}</h3>
               <div className="trend-legend">
                 {emotionItems.map((emotion) => (
                   <span key={emotion.key} style={{ color: emotion.tone }}>
                     <i style={{ backgroundColor: emotion.tone }} />
-                    {emotion.display}
+                    {t(`emotion.${emotion.display}`, emotion.display)}
                   </span>
                 ))}
               </div>
@@ -602,63 +1402,22 @@ const DashboardPage = () => {
             </div>
           </div>
 
-          <div className="macro-card">
-            <h3>Current vs 7 Days Ago</h3>
-            <div className="macro-chart" />
-            <div className="macro-axis">
-              <span>Happy</span>
-              <span>Neutral</span>
-              <span>Stress</span>
-              <span>Sad</span>
-              <span>Angry</span>
-              <span>Fear</span>
-              <span>Surprise</span>
-              <span>Disgust</span>
-              <span>Drowsiness</span>
+          <div className="macro-card comparison-card">
+            <h3>{t('currentVsPrevious', 'Current vs 7 Days Ago')}</h3>
+            <div className="macro-chart comparison-chart">
+              <CurrentVsPreviousChart comparison={comparisonStats} />
             </div>
           </div>
 
           <div className="macro-card">
             <div className="macro-card-header">
-              <h3>Emotional Intensity</h3>
+              <h3>{t('emotionalIntensity', 'Emotional Intensity')}</h3>
               <div className="macro-tag">
-                <span className="tag-dot" /> Daily Value
-                <span className="tag-dot alt" /> Trend
+                <span className="tag-dot" /> {t('intensity', 'Intensity')}
               </div>
             </div>
             <div className="macro-chart chart-wide intensity-chart">
-              <div className="intensity-grid">
-                <span>4</span>
-                <span>3</span>
-                <span>2</span>
-                <span>1</span>
-                <span>0</span>
-              </div>
-              <div className="intensity-baseline" />
-              <div className="intensity-line">
-                <span className="intensity-point" />
-                <span className="intensity-point" />
-                <span className="intensity-point" />
-                <span className="intensity-point" />
-                <span className="intensity-point" />
-                <span className="intensity-point" />
-                <span className="intensity-point" />
-              </div>
-              <div className="intensity-tooltip">
-                <strong>Sat</strong>
-                <span className="i-value">Intensity: 0</span>
-                <span className="i-trend">Trend: 0</span>
-              </div>
-              <div className="intensity-hover" />
-            </div>
-            <div className="macro-axis intensity-axis">
-              <span>Sat</span>
-              <span>Sun</span>
-              <span>Mon</span>
-              <span>Tue</span>
-              <span>Wed</span>
-              <span>Thu</span>
-              <span>Fri</span>
+              <EmotionalIntensityChart days={emotionalIntensity} />
             </div>
           </div>
         </div>

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { useLanguage } from '../context/LanguageContext';
 import {
   getCameraCaptureRequest,
   publishCameraSnapshot,
@@ -9,6 +10,7 @@ import '../App.css';
 
 const EmployeeWelcomePage = () => {
   const { firebaseUser, userProfile, logout } = useAuth();
+  const { t } = useLanguage();
   const [cameraOn, setCameraOn] = useState(false);
   const [startingCamera, setStartingCamera] = useState(false);
   const [status, setStatus] = useState('idle');
@@ -265,21 +267,21 @@ const EmployeeWelcomePage = () => {
     <div className="employee-shell">
       <header className="employee-top">
         <div>
-          <span className="employee-eyebrow">Employee Access</span>
-          <h1>Bienvenido, {userProfile?.username || 'empleado'}</h1>
-          <p className="employee-company">{userProfile?.companyName || 'Empresa'} </p>
+          <span className="employee-eyebrow">{t('employeeAccess', 'Employee Access')}</span>
+          <h1>{t('welcomeEmployee', 'Welcome, {name}', { name: userProfile?.username || t('employeeFallback', 'employee') })}</h1>
+          <p className="employee-company">{userProfile?.companyName || t('companyFallback', 'Company')} </p>
         </div>
         <button className="ghost-button" type="button" onClick={handleLogout}>
-          Log out
+          {t('logout', 'Log out')}
         </button>
       </header>
 
       <main className="employee-main">
         <section className="employee-card">
           <div className="employee-message">
-            <h2>Enciende tu camara</h2>
+            <h2>{t('turnOnCameraTitle', 'Turn on your camera')}</h2>
             <p>
-              Enciende tu camara y espera a que HR procese la imagen desde su dashboard.
+              {t('turnOnCameraBody', 'Turn on your camera and wait for HR to process the image from the dashboard.')}
             </p>
           </div>
           <button
@@ -288,7 +290,7 @@ const EmployeeWelcomePage = () => {
             onClick={cameraOn ? stopCamera : startCamera}
             disabled={startingCamera}
           >
-            {startingCamera ? 'Encendiendo...' : cameraOn ? 'Apagar camara' : 'Encender camara'}
+            {startingCamera ? t('turningOn', 'Turning on...') : cameraOn ? t('stopCamera', 'Stop camera') : t('startCamera', 'Start camera')}
           </button>
           {cameraError && <div className="form-alert error">{cameraError}</div>}
           {snapshotStatus && <div className="form-alert success">{snapshotStatus}</div>}
@@ -299,12 +301,12 @@ const EmployeeWelcomePage = () => {
             {cameraOn ? (
               <video ref={videoRef} autoPlay muted playsInline />
             ) : (
-              <div className="preview-placeholder">Vista previa</div>
+              <div className="preview-placeholder">{t('preview', 'Preview')}</div>
             )}
           </div>
           <div className="preview-status">
-            {status === 'loading' && <span>Cargando...</span>}
-            {status === 'waiting' && <span>Esperando procesamiento de HR...</span>}
+            {status === 'loading' && <span>{t('loading', 'Loading...')}</span>}
+            {status === 'waiting' && <span>{t('waitingHr', 'Waiting for HR processing...')}</span>}
           </div>
         </section>
       </main>

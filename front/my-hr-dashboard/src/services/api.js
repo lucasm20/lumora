@@ -125,6 +125,16 @@ export async function getEmployees(idToken) {
   });
 }
 
+export async function getEmployeeEmotionSummary(idToken, employeeId, period = 'Week') {
+  const params = new URLSearchParams({ period });
+
+  return request(`/employees/${encodeURIComponent(employeeId)}/emotions/summary?${params.toString()}`, {
+    headers: {
+      Authorization: `Bearer ${idToken}`,
+    },
+  });
+}
+
 export async function processEmployeeEmotion(idToken, payload) {
   return request('/emotions/process', {
     method: 'POST',
@@ -154,8 +164,30 @@ export async function getWeeklyEmotionTrend(idToken, period = 'Week') {
   });
 }
 
-export async function getEmotionDistribution(idToken) {
-  return request('/emotions/distribution', {
+export async function getEmotionDistribution(idToken, period = 'Week') {
+  const params = new URLSearchParams({ period });
+
+  return request(`/emotions/distribution?${params.toString()}`, {
+    headers: {
+      Authorization: `Bearer ${idToken}`,
+    },
+  });
+}
+
+export async function getEmotionComparison(idToken, period = 'Week') {
+  const params = new URLSearchParams({ period });
+
+  return request(`/emotions/current-vs-previous?${params.toString()}`, {
+    headers: {
+      Authorization: `Bearer ${idToken}`,
+    },
+  });
+}
+
+export async function getEmotionalIntensity(idToken, period = 'Week') {
+  const params = new URLSearchParams({ period });
+
+  return request(`/emotions/intensity?${params.toString()}`, {
     headers: {
       Authorization: `Bearer ${idToken}`,
     },

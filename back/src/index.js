@@ -44,6 +44,7 @@ const EMOTION_ALIASES = {
 };
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const WEEKDAY_ORDER = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const INTENSITY_EMOTIONS = new Set(['stress', 'sad', 'drowsiness']);
 
 let companiesCache = null;
 let companiesCacheExpiresAt = 0;
@@ -165,6 +166,16 @@ function getPeriodStart(period, now = new Date()) {
   return start;
 }
 
+function filterEventsByPeriod(events, period) {
+  const startDate = getPeriodStart(period);
+  const now = new Date();
+
+  return events.filter((event) => {
+    const capturedAt = getRecordDate(event.capturedAt || event.createdAt);
+    return capturedAt && capturedAt >= startDate && capturedAt <= now;
+  });
+}
+
 function createWeeklyTrend(events) {
   const dayMap = WEEKDAY_ORDER.reduce((map, label) => {
     map[label] = createEmptyEmotionCounts();
@@ -241,7 +252,7 @@ function getRecordDate(value) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-function createEmotionDistribution(employeeDocs, emotionEvents) {
+function createEmotionDistribution(employeeDocs, emotionEvents, includeEmployeeFallback = true) {
   const counts = createEmptyEmotionCounts();
   const employeeDataById = new Map();
   const latestByEmployee = new Map();
@@ -272,27 +283,29 @@ function createEmotionDistribution(employeeDocs, emotionEvents) {
     }
   });
 
-  employeeDataById.forEach((employeeData, employeeId) => {
-    if (latestByEmployee.has(employeeId)) {
-      return;
-    }
+  if (includeEmployeeFallback) {
+    employeeDataById.forEach((employeeData, employeeId) => {
+      if (latestByEmployee.has(employeeId)) {
+        return;
+      }
 
-    const emotion = getRecordEmotion(employeeData);
-    const capturedAt = getRecordDate(
-      employeeData.lastEmotionAt ||
-        employeeData.liveVibeAt ||
-        employeeData.emotionAt ||
-        employeeData.updatedAt ||
-        employeeData.createdAt
-    );
+      const emotion = getRecordEmotion(employeeData);
+      const capturedAt = getRecordDate(
+        employeeData.lastEmotionAt ||
+          employeeData.liveVibeAt ||
+          employeeData.emotionAt ||
+          employeeData.updatedAt ||
+          employeeData.createdAt
+      );
 
-    if (emotion) {
-      latestByEmployee.set(employeeId, {
-        emotion,
-        capturedAt: capturedAt || new Date(0),
-      });
-    }
-  });
+      if (emotion) {
+        latestByEmployee.set(employeeId, {
+          emotion,
+          capturedAt: capturedAt || new Date(0),
+        });
+      }
+    });
+  }
 
   latestByEmployee.forEach(({ emotion }) => {
     counts[emotion] += 1;
@@ -308,6 +321,175 @@ function createEmotionDistribution(employeeDocs, emotionEvents) {
     counts,
     percentages,
     total,
+  };
+}
+
+function createCurrentVsPreviousComparison(employeeDocs, emotionEvents, options = {}) {
+  const targetDate = options.targetDate || new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const currentStart = options.currentStart || null;
+  const currentEnd = options.currentEnd || null;
+  const current = createEmptyEmotionCounts();
+  let previous = createEmptyEmotionCounts();
+  const previousAvailableByEmotion = createEmptyEmotionCounts();
+  const employeeIds = new Set(employeeDocs.map((doc) => doc.id));
+  const eventsByEmployee = new Map();
+
+  emotionEvents.forEach((event) => {
+    if (!employeeIds.has(event.employeeId)) {
+      return;
+    }
+
+    const emotion = getRecordEmotion(event);
+    const capturedAt = getRecordDate(event.capturedAt || event.createdAt);
+
+    if (!emotion || !capturedAt) {
+      return;
+    }
+
+    const existing = eventsByEmployee.get(event.employeeId) || [];
+    existing.push({
+      emotion,
+      capturedAt,
+    });
+    eventsByEmployee.set(event.employeeId, existing);
+  });
+
+  employeeDocs.forEach((doc) => {
+    const employeeEvents = eventsByEmployee
+      .get(doc.id)
+      ?.sort((left, right) => left.capturedAt - right.capturedAt) || [];
+
+    if (!employeeEvents.length) {
+      return;
+    }
+
+    const currentEvents = employeeEvents.filter((event) => {
+      return (
+        (!currentStart || event.capturedAt >= currentStart) &&
+        (!currentEnd || event.capturedAt <= currentEnd)
+      );
+    });
+
+    if (currentEvents.length) {
+      const latest = currentEvents[currentEvents.length - 1];
+      current[latest.emotion] += 1;
+    }
+
+    const historicalEvents = employeeEvents.filter((event) => event.capturedAt <= targetDate);
+
+    if (historicalEvents.length) {
+      const historical = historicalEvents[historicalEvents.length - 1];
+      previous[historical.emotion] += 1;
+      previousAvailableByEmotion[historical.emotion] = 1;
+    }
+  });
+
+  const currentTotal = Object.values(current).reduce((sum, value) => sum + value, 0);
+  const previousTotal = Object.values(previous).reduce((sum, value) => sum + value, 0);
+  const previousAvailable = currentTotal > 0 && previousTotal > 0;
+
+  if (!previousAvailable) {
+    previous = null;
+  }
+
+  const maxValue = Math.max(
+    0,
+    ...EMOTION_LABELS.flatMap((emotion) => [current[emotion] || 0, previous?.[emotion] || 0])
+  );
+
+  return {
+    emotions: EMOTION_LABELS,
+    current,
+    previous,
+    previousAvailable,
+    previousAvailableByEmotion: EMOTION_LABELS.reduce((map, emotion) => {
+      map[emotion] = Boolean(previousAvailableByEmotion[emotion]);
+      return map;
+    }, {}),
+    maxValue,
+    targetAt: targetDate.toISOString(),
+  };
+}
+
+function createEmotionalIntensityTrend(employeeDocs, emotionEvents, period = 'week') {
+  const startIso = getPeriodStart(period).toISOString();
+  const nowIso = new Date().toISOString();
+  const employeeIds = new Set(employeeDocs.map((doc) => doc.id));
+  const latestByEmployeeDay = new Map();
+
+  emotionEvents.forEach((event) => {
+    if (!employeeIds.has(event.employeeId)) {
+      return;
+    }
+
+    const emotion = getRecordEmotion(event);
+    const capturedAt = getRecordDate(event.capturedAt || event.createdAt);
+
+    if (!emotion || !capturedAt) {
+      return;
+    }
+
+    const capturedIso = capturedAt.toISOString();
+    const dayLabel = WEEKDAY_LABELS[capturedAt.getDay()];
+
+    if (capturedIso < startIso || capturedIso > nowIso || !WEEKDAY_ORDER.includes(dayLabel)) {
+      return;
+    }
+
+    const eventKey = `${dayLabel}:${event.employeeId}`;
+    const existing = latestByEmployeeDay.get(eventKey);
+
+    if (!existing || capturedAt > existing.capturedAt) {
+      latestByEmployeeDay.set(eventKey, {
+        capturedAt,
+        dayLabel,
+        emotion,
+      });
+    }
+  });
+
+  const dayTotals = WEEKDAY_ORDER.reduce((map, label) => {
+    map[label] = {
+      total: 0,
+      intense: 0,
+    };
+    return map;
+  }, {});
+
+  latestByEmployeeDay.forEach((event) => {
+    dayTotals[event.dayLabel].total += 1;
+
+    if (INTENSITY_EMOTIONS.has(event.emotion)) {
+      dayTotals[event.dayLabel].intense += 1;
+    }
+  });
+
+  const days = WEEKDAY_ORDER.map((label) => {
+    const total = dayTotals[label].total;
+    const intensity = total ? dayTotals[label].intense / total : 0;
+
+    return {
+      label,
+      intensity: Number(intensity.toFixed(2)),
+      total,
+      intense: dayTotals[label].intense,
+    };
+  });
+
+  const withTrend = days.map((day, index) => {
+    const windowDays = days.slice(Math.max(0, index - 1), Math.min(days.length, index + 2));
+    const trend =
+      windowDays.reduce((sum, item) => sum + item.intensity, 0) / Math.max(windowDays.length, 1);
+
+    return {
+      ...day,
+      trend: Number(trend.toFixed(2)),
+    };
+  });
+
+  return {
+    days: withTrend,
+    range: { start: startIso, end: nowIso, period },
   };
 }
 
@@ -1246,12 +1428,65 @@ app.get('/api/employees', authenticateRequest, async (req, res) => {
   }
 });
 
+app.get('/api/employees/:employeeId/emotions/summary', authenticateRequest, async (req, res) => {
+  if (req.userProfile.role !== 'hr') {
+    return res.status(403).json({ message: 'Only HR admins can read employee emotion details.' });
+  }
+
+  try {
+    const employeeDoc = await db.collection('users').doc(req.params.employeeId).get();
+
+    if (!employeeDoc.exists) {
+      return res.status(404).json({ message: 'Employee not found.' });
+    }
+
+    const employeeData = employeeDoc.data();
+
+    if (
+      normalizeValue(employeeData.role) !== 'employee' ||
+      employeeData.companyName !== req.userProfile.companyName
+    ) {
+      return res.status(403).json({ message: 'Employee not in your company.' });
+    }
+
+    const eventsSnapshot = await db
+      .collection('emotionEvents')
+      .where('companyName', '==', req.userProfile.companyName)
+      .where('employeeId', '==', employeeDoc.id)
+      .get();
+    const events = eventsSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+    const period = req.query.period || 'week';
+    const periodEvents = filterEventsByPeriod(events, period);
+    const startDate = getPeriodStart(period);
+    const now = new Date();
+
+    return res.json({
+      employee: sanitizeEmployee(employeeDoc),
+      distribution: createEmotionDistribution([employeeDoc], periodEvents, false),
+      weeklyTrend: createWeeklyTrend(periodEvents),
+      comparison: createCurrentVsPreviousComparison([employeeDoc], events, {
+        currentStart: startDate,
+        currentEnd: now,
+      }),
+      intensity: createEmotionalIntensityTrend([employeeDoc], events, period),
+      eventsCount: events.length,
+    });
+  } catch (error) {
+    console.error('Employee emotion summary lookup failed:', {
+      code: error.code,
+      message: error.message,
+    });
+    return res.status(500).json({ message: 'Could not load employee emotion summary.' });
+  }
+});
+
 app.get('/api/emotions/distribution', authenticateRequest, async (req, res) => {
   if (req.userProfile.role !== 'hr') {
     return res.status(403).json({ message: 'Only HR admins can read emotion distribution.' });
   }
 
   try {
+    const period = req.query.period || 'week';
     const employeesSnapshot = await db
       .collection('users')
       .where('companyName', '==', req.userProfile.companyName)
@@ -1271,14 +1506,108 @@ app.get('/api/emotions/distribution', authenticateRequest, async (req, res) => {
       .get();
 
     const events = eventsSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+    const filteredEvents = filterEventsByPeriod(events, period);
 
-    return res.json(createEmotionDistribution(employeeDocs, events));
+    return res.json({
+      ...createEmotionDistribution(employeeDocs, filteredEvents, false),
+      range: {
+        start: getPeriodStart(period).toISOString(),
+        end: new Date().toISOString(),
+        period,
+      },
+    });
   } catch (error) {
     console.error('Emotion distribution lookup failed:', {
       code: error.code,
       message: error.message,
     });
     return res.status(500).json({ message: 'Could not load emotion distribution.' });
+  }
+});
+
+app.get('/api/emotions/current-vs-previous', authenticateRequest, async (req, res) => {
+  if (req.userProfile.role !== 'hr') {
+    return res.status(403).json({ message: 'Only HR admins can read emotion comparison.' });
+  }
+
+  try {
+    const period = req.query.period || 'week';
+    const startDate = getPeriodStart(period);
+    const now = new Date();
+    const employeesSnapshot = await db
+      .collection('users')
+      .where('companyName', '==', req.userProfile.companyName)
+      .get();
+
+    const employeeDocs = employeesSnapshot.docs.filter((doc) => {
+      return normalizeValue(doc.data().role) === 'employee';
+    });
+
+    if (!employeeDocs.length) {
+      return res.json(createCurrentVsPreviousComparison([], []));
+    }
+
+    const eventsSnapshot = await db
+      .collection('emotionEvents')
+      .where('companyName', '==', req.userProfile.companyName)
+      .get();
+
+    const events = eventsSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+
+    return res.json({
+      ...createCurrentVsPreviousComparison(employeeDocs, events, {
+        currentStart: startDate,
+        currentEnd: now,
+      }),
+      range: {
+        start: startDate.toISOString(),
+        end: now.toISOString(),
+        period,
+      },
+    });
+  } catch (error) {
+    console.error('Emotion comparison lookup failed:', {
+      code: error.code,
+      message: error.message,
+    });
+    return res.status(500).json({ message: 'Could not load emotion comparison.' });
+  }
+});
+
+app.get('/api/emotions/intensity', authenticateRequest, async (req, res) => {
+  if (req.userProfile.role !== 'hr') {
+    return res.status(403).json({ message: 'Only HR admins can read emotional intensity.' });
+  }
+
+  try {
+    const period = req.query.period || 'week';
+    const employeesSnapshot = await db
+      .collection('users')
+      .where('companyName', '==', req.userProfile.companyName)
+      .get();
+
+    const employeeDocs = employeesSnapshot.docs.filter((doc) => {
+      return normalizeValue(doc.data().role) === 'employee';
+    });
+
+    if (!employeeDocs.length) {
+      return res.json(createEmotionalIntensityTrend([], [], period));
+    }
+
+    const eventsSnapshot = await db
+      .collection('emotionEvents')
+      .where('companyName', '==', req.userProfile.companyName)
+      .get();
+
+    const events = eventsSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+
+    return res.json(createEmotionalIntensityTrend(employeeDocs, events, period));
+  } catch (error) {
+    console.error('Emotional intensity lookup failed:', {
+      code: error.code,
+      message: error.message,
+    });
+    return res.status(500).json({ message: 'Could not load emotional intensity.' });
   }
 });
 

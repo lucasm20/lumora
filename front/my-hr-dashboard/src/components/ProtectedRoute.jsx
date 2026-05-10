@@ -1,6 +1,7 @@
 import React from 'react';
 import { Navigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { useLanguage } from '../context/LanguageContext';
 
 const roleHome = {
   employee: '/employee',
@@ -9,11 +10,12 @@ const roleHome = {
 
 const ProtectedRoute = ({ allowedRole, children }) => {
   const { firebaseUser, userProfile, loading } = useAuth();
+  const { t } = useLanguage();
 
   if (loading) {
     return (
       <div className="auth-loading">
-        <span>Loading session...</span>
+        <span>{t('loadingSession', 'Loading session...')}</span>
       </div>
     );
   }
