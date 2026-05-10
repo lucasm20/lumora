@@ -1,0 +1,12 @@
+{
+  "name": "delegado",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev:back": "npm run dev --prefix back",
+    "dev:front": "npm run dev --prefix front/my-hr-dashboard",
+    "build:front": "npm run build --prefix front/my-hr-dashboard",
+    "check:back": "npm run check --prefix back",
+    "install:all": "npm install --prefix back && npm install --prefix front/my-hr-dashboard"
+  }
+}
