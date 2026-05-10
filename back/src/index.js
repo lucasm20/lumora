@@ -6,7 +6,11 @@ const { HR_USER, seedHrUser } = require('./hrUser');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
-const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
+const DEFAULT_CLIENT_ORIGINS = ['http://localhost:5173', 'https://lumora-nine-olive.vercel.app'];
+const CLIENT_ORIGINS = (process.env.CLIENT_ORIGIN || DEFAULT_CLIENT_ORIGINS.join(','))
+  .split(',')
+  .map((origin) => origin.trim().replace(/\/$/, ''))
+  .filter(Boolean);
 const COMPANIES_CACHE_TTL_MS = Number(process.env.COMPANIES_CACHE_TTL_MS || 5 * 60 * 1000);
 const CAPTURE_REQUEST_WAIT_MS = Number(process.env.CAPTURE_REQUEST_WAIT_MS || 8000);
 const CAPTURE_REQUEST_POLL_MS = Number(process.env.CAPTURE_REQUEST_POLL_MS || 500);
@@ -56,7 +60,14 @@ function sleep(ms) {
 
 app.use(
   cors({
-    origin: CLIENT_ORIGIN,
+    origin(origin, callback) {
+      if (!origin || CLIENT_ORIGINS.includes(origin.replace(/\/$/, ''))) {
+        callback(null, true);
+        return;
+      }
+
+      callback(new Error('Not allowed by CORS'));
+    },
     credentials: true,
   })
 );
