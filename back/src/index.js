@@ -85,6 +85,27 @@ const EMOTION_ALIASES = {
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const WEEKDAY_ORDER = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const INTENSITY_EMOTIONS = new Set(['stress', 'sad', 'drowsiness']);
+const ANALYTICS_TIME_ZONE = process.env.ANALYTICS_TIME_ZONE || 'America/Lima';
+const TIME_ZONE_DATE_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  timeZone: ANALYTICS_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+const TIME_ZONE_OFFSET_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  timeZone: ANALYTICS_TIME_ZONE,
+  hourCycle: 'h23',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+});
+const TIME_ZONE_WEEKDAY_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  timeZone: ANALYTICS_TIME_ZONE,
+  weekday: 'short',
+});
 
 let companiesCache = null;
 let companiesCacheExpiresAt = 0;
@@ -119,6 +140,62 @@ function normalizeValue(value = '') {
 
 function normalizeEmotion(value = '') {
   return EMOTION_ALIASES[normalizeValue(value)] || null;
+}
+
+function getFormatterParts(formatter, date) {
+  return formatter.formatToParts(date).reduce((parts, part) => {
+    if (part.type !== 'literal') {
+      parts[part.type] = part.value;
+    }
+
+    return parts;
+  }, {});
+}
+
+function getTimeZoneDateParts(date) {
+  const parts = getFormatterParts(TIME_ZONE_DATE_FORMATTER, date);
+
+  return {
+    year: Number(parts.year),
+    month: Number(parts.month),
+    day: Number(parts.day),
+  };
+}
+
+function normalizeCalendarDateParts(year, month, day) {
+  const date = new Date(Date.UTC(year, month - 1, day));
+
+  return {
+    year: date.getUTCFullYear(),
+    month: date.getUTCMonth() + 1,
+    day: date.getUTCDate(),
+  };
+}
+
+function getTimeZoneOffsetMinutes(date) {
+  const parts = getFormatterParts(TIME_ZONE_OFFSET_FORMATTER, date);
+  const localAsUtc = Date.UTC(
+    Number(parts.year),
+    Number(parts.month) - 1,
+    Number(parts.day),
+    Number(parts.hour),
+    Number(parts.minute),
+    Number(parts.second)
+  );
+
+  return (localAsUtc - date.getTime()) / 60000;
+}
+
+function getTimeZoneStartOfDay(year, month, day) {
+  const normalized = normalizeCalendarDateParts(year, month, day);
+  const utcGuess = Date.UTC(normalized.year, normalized.month - 1, normalized.day);
+  const offsetMinutes = getTimeZoneOffsetMinutes(new Date(utcGuess));
+
+  return new Date(utcGuess - offsetMinutes * 60 * 1000);
+}
+
+function getTimeZoneWeekdayLabel(date) {
+  return TIME_ZONE_WEEKDAY_FORMATTER.format(date);
 }
 
 function isValidUsername(username) {
@@ -188,29 +265,26 @@ function createEmptyEmotionCounts() {
 
 function getPeriodStart(period, now = new Date()) {
   const normalizedPeriod = normalizeValue(period);
-  const start = new Date(now);
 
   if (normalizedPeriod === '1h') {
+    const start = new Date(now);
     start.setHours(start.getHours() - 1);
     return start;
   }
 
+  const { year, month, day } = getTimeZoneDateParts(now);
+
   if (normalizedPeriod === 'today') {
-    start.setHours(0, 0, 0, 0);
-    return start;
+    return getTimeZoneStartOfDay(year, month, day);
   }
 
   if (normalizedPeriod === 'month') {
-    start.setDate(1);
-    start.setHours(0, 0, 0, 0);
-    return start;
+    return getTimeZoneStartOfDay(year, month, 1);
   }
 
-  const day = start.getDay();
-  const daysSinceMonday = day === 0 ? 6 : day - 1;
-  start.setDate(start.getDate() - daysSinceMonday);
-  start.setHours(0, 0, 0, 0);
-  return start;
+  const weekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+  const daysSinceMonday = weekday === 0 ? 6 : weekday - 1;
+  return getTimeZoneStartOfDay(year, month, day - daysSinceMonday);
 }
 
 function filterEventsByPeriod(events, period) {
@@ -231,14 +305,14 @@ function createWeeklyTrend(events) {
   const latestEventByEmployeeDay = new Map();
 
   events.forEach((event) => {
-    const capturedAt = new Date(event.capturedAt);
+    const capturedAt = getRecordDate(event.capturedAt || event.createdAt);
 
-    if (Number.isNaN(capturedAt.getTime())) {
+    if (!capturedAt) {
       return;
     }
 
     const emotion = normalizeEmotion(event.emotion);
-    const dayLabel = WEEKDAY_LABELS[capturedAt.getDay()];
+    const dayLabel = getTimeZoneWeekdayLabel(capturedAt);
 
     if (!emotion || !dayMap[dayLabel]) {
       return;
@@ -477,7 +551,7 @@ function createEmotionalIntensityTrend(employeeDocs, emotionEvents, period = 'we
     }
 
     const capturedIso = capturedAt.toISOString();
-    const dayLabel = WEEKDAY_LABELS[capturedAt.getDay()];
+    const dayLabel = getTimeZoneWeekdayLabel(capturedAt);
 
     if (capturedIso < startIso || capturedIso > nowIso || !WEEKDAY_ORDER.includes(dayLabel)) {
       return;
@@ -1694,17 +1768,11 @@ app.get('/api/emotions/weekly-trend', authenticateRequest, async (req, res) => {
 
     const events = eventsSnapshot.docs
       .map((doc) => ({ id: doc.id, ...doc.data() }))
-      .filter((event) => {
-        return (
-          employeeIds.has(event.employeeId) &&
-          event.capturedAt &&
-          event.capturedAt >= startIso &&
-          event.capturedAt <= nowIso
-        );
-      });
+      .filter((event) => employeeIds.has(event.employeeId));
+    const filteredEvents = filterEventsByPeriod(events, period);
 
     return res.json({
-      ...createWeeklyTrend(events),
+      ...createWeeklyTrend(filteredEvents),
       range: { start: startIso, end: nowIso, period },
     });
   } catch (error) {
