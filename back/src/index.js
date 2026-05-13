@@ -615,6 +615,10 @@ function createEmotionalIntensityTrend(employeeDocs, emotionEvents, period = 'we
 }
 
 async function ensureHrUserSeeded() {
+  if (process.env.AUTO_SEED_HR_USER !== 'true') {
+    return null;
+  }
+
   if (!companiesSeedPromise) {
     companiesSeedPromise = seedHrUser(db).catch((error) => {
       companiesSeedPromise = null;
