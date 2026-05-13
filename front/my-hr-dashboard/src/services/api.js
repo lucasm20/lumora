@@ -13,8 +13,60 @@ function clearCompaniesCache() {
   companiesCacheTime = 0;
 }
 
+function parseJsonBody(body) {
+  if (typeof body !== 'string') {
+    return null;
+  }
+
+  try {
+    return JSON.parse(body);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeApiErrorMessage(path, message, payload) {
+  const fallbackMessage = message || 'Request failed.';
+  const normalizedMessage = String(fallbackMessage).toLowerCase();
+
+  if (path === '/auth/login') {
+    return 'Invalid username or password.';
+  }
+
+  if (path === '/auth/register') {
+    const duplicatePattern = /already|exists|exist|duplicate|duplicad|ya.*registrad|ya.*existe/;
+    const usernamePattern = /username|user name|usuario|user/;
+    const companyPattern = /company|empresa/;
+    const invalidCompanyPattern = /not found|not registered|does not exist|doesn't exist|no existe|invalid|incorrect|existing company|registered company|select|seleccion/;
+
+    if (usernamePattern.test(normalizedMessage) && duplicatePattern.test(normalizedMessage)) {
+      return 'Username already registered.';
+    }
+
+    if (
+      payload?.role === 'employee' &&
+      companyPattern.test(normalizedMessage) &&
+      (invalidCompanyPattern.test(normalizedMessage) || !duplicatePattern.test(normalizedMessage))
+    ) {
+      return 'Select an existing company.';
+    }
+
+    if (companyPattern.test(normalizedMessage) && duplicatePattern.test(normalizedMessage)) {
+      const companyName = String(payload?.companyName || 'Company').trim() || 'Company';
+      return `Company '${companyName}' already registered.`;
+    }
+  }
+
+  if (path === '/emotions/process-active' && /employee|empleado/.test(normalizedMessage)) {
+    return 'No employee found.';
+  }
+
+  return fallbackMessage;
+}
+
 async function request(path, options = {}) {
   const { headers: optionHeaders, ...fetchOptions } = options;
+  const payload = parseJsonBody(fetchOptions.body);
 
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...fetchOptions,
@@ -27,7 +79,7 @@ async function request(path, options = {}) {
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    throw new Error(data.message || 'Request failed.');
+    throw new Error(normalizeApiErrorMessage(path, data.message, payload));
   }
 
   return data;

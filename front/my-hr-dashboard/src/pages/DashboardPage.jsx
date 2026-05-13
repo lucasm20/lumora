@@ -1226,7 +1226,7 @@ const DashboardPage = () => {
     navigate('/');
   };
 
-
+  const companyDisplayName = userProfile?.companyName || t('companyFallback', 'Company');
   return (
     <div className="dashboard-shell">
       <aside className="sidebar">
@@ -1267,9 +1267,9 @@ const DashboardPage = () => {
       <div className="dashboard-main">
         <header className="dashboard-top">
           <div>
-            <h1 className="dashboard-title">EYEAI</h1>
+            <h1 className="dashboard-title">{companyDisplayName}</h1>
             <p className="dashboard-subtitle">
-              {userProfile?.companyName} - {t('signedInAs', 'signed in as')} {userProfile?.username}
+              {t('signedInAs', 'signed in as')} {userProfile?.username}
             </p>
           </div>
           <div className="dashboard-actions">

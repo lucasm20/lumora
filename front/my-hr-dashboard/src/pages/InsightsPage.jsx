@@ -620,17 +620,15 @@ const InsightsPage = () => {
         })
       );
 
-      if (!results.length && skipped.length) {
-        setProcessSummary(`No se proceso ningun empleado. ${skipped[0].reason}`);
-      } else if (!results.length) {
-        setProcessSummary('No hay empleados con camara activa y snapshot disponible.');
+      if (!results.length) {
+        setProcessSummary('No employee found.');
       } else if (skipped.length) {
         setProcessSummary(`${results.length} empleados procesados. ${skipped.length} sin snapshot activo.`);
       } else {
         setProcessSummary(`${results.length} empleados procesados correctamente.`);
       }
     } catch (requestError) {
-      setProcessingError(requestError.message || 'No se pudo procesar la imagen.');
+      setProcessingError(requestError.message || 'No employee found.');
     } finally {
       setProcessing(false);
     }
