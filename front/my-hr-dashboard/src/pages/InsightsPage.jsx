@@ -41,6 +41,7 @@ const emptyIntensityDays = weekdayLabels.map((label) => ({
   intensity: 0,
   trend: 0,
 }));
+const NO_EMPLOYEE_FOUND_MESSAGE = 'No employee found';
 
 function formatPercent(value) {
   const number = Number.isFinite(Number(value)) ? Number(value) : 0;
@@ -592,6 +593,16 @@ const InsightsPage = () => {
       const results = response.processed || [];
       const skipped = response.skipped || [];
 
+      if (response.status === 'no_employee_found' || (!results.length && !skipped.length)) {
+        setProcessSummary(response.message || NO_EMPLOYEE_FOUND_MESSAGE);
+        return;
+      }
+
+      if (!results.length) {
+        setProcessSummary(response.message || NO_EMPLOYEE_FOUND_MESSAGE);
+        return;
+      }
+
       setEmployees((prev) =>
         prev.map((employee) => {
           const update = results.find((item) => item.employeeId === employee.id);
@@ -620,15 +631,9 @@ const InsightsPage = () => {
         })
       );
 
-      if (!results.length) {
-        setProcessSummary('No employee found.');
-      } else if (skipped.length) {
-        setProcessSummary(`${results.length} empleados procesados. ${skipped.length} sin snapshot activo.`);
-      } else {
-        setProcessSummary(`${results.length} empleados procesados correctamente.`);
-      }
+      setProcessSummary(response.message || `${results.length} employees were processed`);
     } catch (requestError) {
-      setProcessingError(requestError.message || 'No employee found.');
+      setProcessingError(requestError.message || NO_EMPLOYEE_FOUND_MESSAGE);
     } finally {
       setProcessing(false);
     }

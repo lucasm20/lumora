@@ -2,7 +2,7 @@ import { signInWithCustomToken, signOut } from 'firebase/auth';
 import { auth, isFirebaseConfigured } from '../firebase';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
-const COMPANIES_CACHE_TTL_MS = 5 * 60 * 1000;
+const COMPANIES_CACHE_TTL_MS = 30 * 1000;
 
 let companiesCache = null;
 let companiesCacheTime = 0;
@@ -53,12 +53,12 @@ function normalizeApiErrorMessage(path, message, payload) {
 
     if (companyPattern.test(normalizedMessage) && duplicatePattern.test(normalizedMessage)) {
       const companyName = String(payload?.companyName || 'Company').trim() || 'Company';
-      return `Company '${companyName}' already registered.`;
+      return `Company '${companyName}' already registered`;
     }
   }
 
   if (path === '/emotions/process-active' && /employee|empleado/.test(normalizedMessage)) {
-    return 'No employee found.';
+    return 'No employee found';
   }
 
   return fallbackMessage;
@@ -96,11 +96,19 @@ export function getCompanies({ forceRefresh = false } = {}) {
     return companiesRequest;
   }
 
-  companiesRequest = request('/companies')
+  companiesRequest = request(forceRefresh ? '/companies?refresh=1' : '/companies', {
+    headers: forceRefresh ? { 'Cache-Control': 'no-cache' } : undefined,
+  })
     .then((data) => {
       companiesCache = {
         ...data,
-        companies: Array.isArray(data.companies) ? data.companies : [],
+        companies: Array.isArray(data.companies)
+          ? [...data.companies].sort((left, right) =>
+              String(left.companyName || '').localeCompare(String(right.companyName || ''), undefined, {
+                sensitivity: 'base',
+              })
+            )
+          : [],
       };
       companiesCacheTime = Date.now();
       return companiesCache;

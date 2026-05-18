@@ -1,19 +1,21 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { getCompanies } from '../services/api';
 
 export function useCompanies() {
   const [companies, setCompanies] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const isMountedRef = useRef(false);
+  const requestIdRef = useRef(0);
 
-  useEffect(() => {
-    let isMounted = true;
-
+  const loadCompanies = useCallback((options = {}) => {
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
     setLoading(true);
 
-    getCompanies()
+    return getCompanies(options)
       .then((data) => {
-        if (!isMounted) {
+        if (!isMountedRef.current || requestId !== requestIdRef.current) {
           return;
         }
 
@@ -21,20 +23,35 @@ export function useCompanies() {
         setError('');
       })
       .catch((requestError) => {
-        if (isMounted) {
-          setError(requestError.message);
+        if (!isMountedRef.current || requestId !== requestIdRef.current) {
+          return;
         }
+
+        setError(requestError.message);
       })
       .finally(() => {
-        if (isMounted) {
-          setLoading(false);
+        if (!isMountedRef.current || requestId !== requestIdRef.current) {
+          return;
         }
-      });
 
-    return () => {
-      isMounted = false;
-    };
+        setLoading(false);
+      });
   }, []);
 
-  return { companies, loading, error };
+  useEffect(() => {
+    isMountedRef.current = true;
+
+    loadCompanies();
+
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, [loadCompanies]);
+
+  return {
+    companies,
+    loading,
+    error,
+    refreshCompanies: () => loadCompanies({ forceRefresh: true }),
+  };
 }

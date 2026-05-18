@@ -20,6 +20,7 @@ const RegisterPage = () => {
     companies,
     loading: companiesLoading,
     error: companyLoadError,
+    refreshCompanies,
   } = useCompanies();
 
   const triggerBounce = (callback) => {
@@ -62,6 +63,10 @@ const RegisterPage = () => {
   const handleRoleChange = (nextRole) => {
     setRole(nextRole);
     setCompanyName('');
+
+    if (nextRole === 'employee') {
+      refreshCompanies();
+    }
   };
 
   const companySelectPending = role === 'employee' && companiesLoading;
@@ -116,7 +121,14 @@ const RegisterPage = () => {
                 <select
                   id="register-company"
                   value={companyName}
-                  onChange={(event) => setCompanyName(event.target.value)}
+                  onChange={(event) => {
+                    event.target.setCustomValidity('');
+                    setCompanyName(event.target.value);
+                  }}
+                  onInvalid={(event) => {
+                    event.target.setCustomValidity('Select an existing company');
+                  }}
+                  onFocus={() => refreshCompanies()}
                   disabled={companiesLoading}
                   required
                 >

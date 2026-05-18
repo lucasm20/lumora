@@ -52,6 +52,7 @@ const CAPTURE_REQUEST_WAIT_MS = Number(process.env.CAPTURE_REQUEST_WAIT_MS || 80
 const CAPTURE_REQUEST_POLL_MS = Number(process.env.CAPTURE_REQUEST_POLL_MS || 500);
 const CAPTURE_REQUEST_TTL_MS = Number(process.env.CAPTURE_REQUEST_TTL_MS || 30000);
 const CAMERA_SNAPSHOT_MAX_BYTES = Number(process.env.CAMERA_SNAPSHOT_MAX_BYTES || 10 * 1024 * 1024);
+const LIVE_VIBE_NO_EMPLOYEE_FOUND_MESSAGE = 'No employee found';
 const EMOTION_LABELS = [
   'happy',
   'neutral',
@@ -136,6 +137,10 @@ function normalizeUsername(username = '') {
 
 function normalizeValue(value = '') {
   return String(value || '').trim().toLowerCase();
+}
+
+function getCompanyId(companyName = '') {
+  return normalizeValue(companyName);
 }
 
 function normalizeEmotion(value = '') {
@@ -977,6 +982,33 @@ async function processEmotionForEmployee(employeeDoc, imageValue, captureHints =
   };
 }
 
+async function closePendingCaptureRequests(employeeDocs, requestId, status, fields = {}) {
+  await Promise.all(
+    employeeDocs.map(async (employeeDoc) => {
+      const requestRef = db.collection('cameraCaptureRequests').doc(employeeDoc.id);
+      const requestDoc = await requestRef.get();
+      const requestData = requestDoc.exists ? requestDoc.data() : null;
+
+      if (!requestData || requestData.status !== 'pending') {
+        return;
+      }
+
+      if (requestId && requestData.requestId !== requestId) {
+        return;
+      }
+
+      await requestRef.set(
+        {
+          status,
+          completedAt: new Date().toISOString(),
+          ...fields,
+        },
+        { merge: true }
+      );
+    })
+  );
+}
+
 function getProcessErrorReason(error) {
   if (error.code === 'vision/missing-config') {
     return 'Azure OpenAI endpoint, API key, or deployment is not configured.';
@@ -1037,9 +1069,13 @@ app.get('/api/health', (req, res) => {
 
 app.get('/api/companies', async (req, res) => {
   try {
-    if (companiesCache && Date.now() < companiesCacheExpiresAt) {
+    const refreshRequested = ['1', 'true', 'yes'].includes(
+      String(req.query.refresh || req.query.forceRefresh || '').toLowerCase()
+    );
+
+    if (!refreshRequested && companiesCache && Date.now() < companiesCacheExpiresAt) {
       return res
-        .set('Cache-Control', 'private, max-age=60')
+        .set('Cache-Control', 'private, max-age=10')
         .json({ companies: companiesCache, cached: true });
     }
 
@@ -1058,7 +1094,9 @@ app.get('/api/companies', async (req, res) => {
     companiesCache = companies;
     companiesCacheExpiresAt = Date.now() + COMPANIES_CACHE_TTL_MS;
 
-    return res.set('Cache-Control', 'private, max-age=60').json({ companies, cached: false });
+    return res
+      .set('Cache-Control', refreshRequested ? 'no-store' : 'private, max-age=10')
+      .json({ companies, cached: false });
   } catch (error) {
     return res.status(500).json({ message: 'Could not load companies.' });
   }
@@ -1122,6 +1160,7 @@ app.post('/api/auth/register', async (req, res) => {
   const { role = 'employee', companyName, username, password } = req.body;
   const normalizedUsername = normalizeUsername(username);
   const normalizedCompany = companyName?.trim();
+  const companyId = getCompanyId(normalizedCompany);
 
   // Log minimal context (avoid logging passwords).
   console.log('Register attempt:', {
@@ -1152,26 +1191,46 @@ app.post('/api/auth/register', async (req, res) => {
     }
 
     const userId = normalizedUsername;
+    const companyRef = db.collection('companies').doc(companyId);
+    const userRef = db.collection('users').doc(userId);
+    let registeredCompanyName = normalizedCompany;
 
-    await db.collection('companies').doc(normalizedCompany.toLowerCase()).set(
-      {
-        companyName: normalizedCompany,
-      },
-      { merge: true }
-    );
+    await db.runTransaction(async (transaction) => {
+      const companyDoc = await transaction.get(companyRef);
 
-    await db.collection('users').doc(userId).set({
-      username: normalizedUsername,
-      companyName: normalizedCompany,
-      role,
-      password,
-      createdAt: new Date().toISOString(),
+      if (role === 'hr') {
+        if (companyDoc.exists) {
+          const error = new Error(`Company '${normalizedCompany}' already registered`);
+          error.status = 409;
+          throw error;
+        }
+
+        transaction.create(companyRef, {
+          companyName: normalizedCompany,
+        });
+      } else {
+        if (!companyDoc.exists) {
+          const error = new Error('Company not registered.');
+          error.status = 400;
+          throw error;
+        }
+
+        registeredCompanyName = companyDoc.data().companyName || normalizedCompany;
+      }
+
+      transaction.create(userRef, {
+        username: normalizedUsername,
+        companyName: registeredCompanyName,
+        role,
+        password,
+        createdAt: new Date().toISOString(),
+      });
     });
 
     const user = {
       id: userId,
       username: normalizedUsername,
-      companyName: normalizedCompany,
+      companyName: registeredCompanyName,
       role,
     };
     clearCompaniesCache();
@@ -1184,6 +1243,10 @@ app.post('/api/auth/register', async (req, res) => {
       code: error.code,
       message: error.message,
     });
+
+    if (error.status) {
+      return res.status(error.status).json({ message: error.message });
+    }
 
     const response = getAuthErrorResponse(error);
     return res.status(response.status).json({ message: response.message });
@@ -1412,9 +1475,16 @@ async function handleProcessImages(req, res) {
       const data = doc.data();
       return data.role === 'employee';
     });
+    const connectedEmployeeDocs = employeeDocs.filter((doc) => doc.data().cameraOn === true);
 
-    if (!employeeDocs.length) {
+    if (!connectedEmployeeDocs.length) {
+      await closePendingCaptureRequests(employeeDocs, null, LIVE_VIBE_NO_EMPLOYEE_FOUND_MESSAGE, {
+        message: LIVE_VIBE_NO_EMPLOYEE_FOUND_MESSAGE,
+      });
+
       return res.json({
+        status: 'no_employee_found',
+        message: LIVE_VIBE_NO_EMPLOYEE_FOUND_MESSAGE,
         processed: [],
         skipped: [],
       });
@@ -1424,7 +1494,7 @@ async function handleProcessImages(req, res) {
     const requestedAt = new Date().toISOString();
 
     await Promise.all(
-      employeeDocs.map((employeeDoc) => {
+      connectedEmployeeDocs.map((employeeDoc) => {
         const employeeData = employeeDoc.data();
 
         return db.collection('cameraCaptureRequests').doc(employeeDoc.id).set(
@@ -1444,9 +1514,9 @@ async function handleProcessImages(req, res) {
     const frameDataByEmployee = new Map();
     const deadline = Date.now() + CAPTURE_REQUEST_WAIT_MS;
 
-    while (Date.now() < deadline && frameDataByEmployee.size < employeeDocs.length) {
+    while (Date.now() < deadline && frameDataByEmployee.size < connectedEmployeeDocs.length) {
       const frameDocs = await Promise.all(
-        employeeDocs.map((employeeDoc) => db.collection('cameraFrames').doc(employeeDoc.id).get())
+        connectedEmployeeDocs.map((employeeDoc) => db.collection('cameraFrames').doc(employeeDoc.id).get())
       );
 
       frameDocs.forEach((frameDoc) => {
@@ -1457,13 +1527,13 @@ async function handleProcessImages(req, res) {
         }
       });
 
-      if (frameDataByEmployee.size < employeeDocs.length) {
+      if (frameDataByEmployee.size < connectedEmployeeDocs.length) {
         await sleep(CAPTURE_REQUEST_POLL_MS);
       }
     }
 
     const finalFrameDocs = await Promise.all(
-      employeeDocs.map((employeeDoc) => db.collection('cameraFrames').doc(employeeDoc.id).get())
+      connectedEmployeeDocs.map((employeeDoc) => db.collection('cameraFrames').doc(employeeDoc.id).get())
     );
 
     finalFrameDocs.forEach((frameDoc) => {
@@ -1477,7 +1547,7 @@ async function handleProcessImages(req, res) {
     const processed = [];
     const skipped = [];
 
-    for (const employeeDoc of employeeDocs) {
+    for (const employeeDoc of connectedEmployeeDocs) {
       const frameData = frameDataByEmployee.get(employeeDoc.id);
 
       try {
@@ -1513,7 +1583,36 @@ async function handleProcessImages(req, res) {
       }
     }
 
-    return res.json({ processed, skipped });
+    const unprocessedEmployeeDocs = connectedEmployeeDocs.filter((employeeDoc) => {
+      return !processed.some((result) => result.employeeId === employeeDoc.id);
+    });
+
+    if (unprocessedEmployeeDocs.length) {
+      await closePendingCaptureRequests(
+        unprocessedEmployeeDocs,
+        requestId,
+        LIVE_VIBE_NO_EMPLOYEE_FOUND_MESSAGE,
+        {
+          message: LIVE_VIBE_NO_EMPLOYEE_FOUND_MESSAGE,
+        }
+      );
+    }
+
+    if (!processed.length) {
+      return res.json({
+        status: 'no_employee_found',
+        message: LIVE_VIBE_NO_EMPLOYEE_FOUND_MESSAGE,
+        processed,
+        skipped,
+      });
+    }
+
+    return res.json({
+      status: 'processed',
+      message: `${processed.length} employees were processed`,
+      processed,
+      skipped,
+    });
   } catch (error) {
     console.error('Batch emotion processing failed:', {
       code: error.code,

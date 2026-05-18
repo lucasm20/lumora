@@ -5,6 +5,7 @@ import { useLanguage } from '../context/LanguageContext';
 import {
   getCameraCaptureRequest,
   publishCameraSnapshot,
+  updateCameraStatus,
 } from '../services/api';
 import '../App.css';
 
@@ -32,6 +33,13 @@ const EmployeeWelcomePage = () => {
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
+    }
+
+    if (firebaseUser) {
+      firebaseUser
+        .getIdToken()
+        .then((token) => updateCameraStatus(token, false))
+        .catch(() => {});
     }
 
   }, [firebaseUser]);
@@ -193,6 +201,15 @@ const EmployeeWelcomePage = () => {
   };
 
   const stopCamera = async () => {
+    if (firebaseUser) {
+      try {
+        const token = await firebaseUser.getIdToken();
+        await updateCameraStatus(token, false);
+      } catch {
+        // Best effort: local camera cleanup should still complete.
+      }
+    }
+
     if (captureRequestIntervalRef.current) {
       clearInterval(captureRequestIntervalRef.current);
       captureRequestIntervalRef.current = null;
@@ -216,6 +233,10 @@ const EmployeeWelcomePage = () => {
   };
 
   const handleLogout = async () => {
+    if (cameraOn || streamRef.current) {
+      await stopCamera();
+    }
+
     await logout();
     navigate('/');
   };
@@ -241,6 +262,10 @@ const EmployeeWelcomePage = () => {
       });
       streamRef.current = stream;
       cameraStartedAtRef.current = Date.now();
+      if (firebaseUser) {
+        const token = await firebaseUser.getIdToken();
+        await updateCameraStatus(token, true);
+      }
       setCameraOn(true);
       setStatus('waiting');
     } catch (error) {
