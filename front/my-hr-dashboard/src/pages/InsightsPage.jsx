@@ -68,10 +68,16 @@ function normalizeMetricPercent(value) {
   return number <= 1 ? number * 100 : number;
 }
 
+function getEmployeeLiveVibe(employee) {
+  return employee?.lastEmotion || employee?.liveVibe || employee?.emotion || employee?.dominantEmotion || employee?.vibe || '';
+}
+
 function getEmployeeSyncDate(employee) {
   const timestamp =
     employee?.latestCameraFrameAt ||
     employee?.lastEmotionAt ||
+    employee?.liveVibeAt ||
+    employee?.emotionAt ||
     employee?.cameraUpdatedAt ||
     employee?.updatedAt ||
     employee?.createdAt;
@@ -571,7 +577,7 @@ const InsightsPage = () => {
     }
 
     return employeesInPeriod.filter((employee) => {
-      return [employee.username, employee.role, employee.team, employee.lastEmotion]
+      return [employee.username, employee.role, employee.team, getEmployeeLiveVibe(employee)]
         .join(' ')
         .toLowerCase()
         .includes(needle);
@@ -616,6 +622,10 @@ const InsightsPage = () => {
             ...employee,
             lastEmotion: update?.emotion || employee.lastEmotion,
             lastEmotionAt: update?.capturedAt || employee.lastEmotionAt,
+            liveVibe: update?.emotion || employee.liveVibe,
+            liveVibeAt: update?.capturedAt || employee.liveVibeAt,
+            emotion: update?.emotion || employee.emotion,
+            emotionAt: update?.capturedAt || employee.emotionAt,
             latestCameraFrameAt: update?.frameCapturedAt || skip?.capturedAt || employee.latestCameraFrameAt,
           };
         })
@@ -726,7 +736,7 @@ const InsightsPage = () => {
         const total = getCountsTotal(counts);
         const weeklyDays = summary?.weeklyTrend?.days?.length ? summary.weeklyTrend.days : emptyTrendDays;
         const employeeName = employee.username || 'Employee';
-        const liveVibe = employee.lastEmotion || employee.liveVibe || employee.emotion || 'Pending';
+        const liveVibe = getEmployeeLiveVibe(employee) || 'Pending';
         const lastSync = formatEmployeeSyncDate(employee);
         const summaryText = total ? getAuditSummary(employeeName, distribution) : 'No data available.';
 
@@ -846,8 +856,12 @@ const InsightsPage = () => {
   const detailWeeklyDays = employeeDetail?.weeklyTrend?.days?.length ? employeeDetail.weeklyTrend.days : emptyTrendDays;
   const detailComparison = employeeDetail?.comparison || { current: emptyCounts, previous: emptyCounts };
   const detailIntensityDays = employeeDetail?.intensity?.days?.length ? employeeDetail.intensity.days : emptyIntensityDays;
-  const currentVibe = detailEmployee?.lastEmotion || detailEmployee?.liveVibe || detailEmployee?.emotion || t('pending', 'Pending');
-  const lastSync = detailEmployee?.latestCameraFrameAt || detailEmployee?.lastEmotionAt;
+  const currentVibe = getEmployeeLiveVibe(detailEmployee) || t('pending', 'Pending');
+  const lastSync =
+    detailEmployee?.latestCameraFrameAt ||
+    detailEmployee?.lastEmotionAt ||
+    detailEmployee?.liveVibeAt ||
+    detailEmployee?.emotionAt;
   const validLiveVibeCount = Number(detailDistribution.total) || 0;
   const dominantEmotion = emotionItems.reduce(
     (current, item) =>
@@ -996,7 +1010,10 @@ const InsightsPage = () => {
                 <span>{employee.role}</span>
                 <span className="insights-tag">{employee.team || t('general', 'General')}</span>
                 <span className="insights-vibe">
-                  {t(`emotion.${employee.lastEmotion}`, employee.lastEmotion || t('pending', 'Pending'))}
+                  {(() => {
+                    const liveVibe = getEmployeeLiveVibe(employee);
+                    return t(`emotion.${liveVibe}`, liveVibe || t('pending', 'Pending'));
+                  })()}
                 </span>
                 <span className="insights-tag">{employee.cameraOn ? t('on', 'On') : t('off', 'Off')}</span>
                 <span className="insights-sync">{formatEmployeeSyncDate(employee)}</span>

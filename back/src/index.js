@@ -932,6 +932,10 @@ async function saveEmotionResult(employeeId, emotionData) {
       lastEmotionAt: timestamp,
       lastEmotionConfidence: emotionData.confidence || null,
       lastEmotionRaw: emotionData.raw || null,
+      liveVibe: emotionData.emotion,
+      liveVibeAt: timestamp,
+      emotion: emotionData.emotion,
+      emotionAt: timestamp,
     },
     { merge: true }
   );
