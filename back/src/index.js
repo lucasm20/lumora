@@ -1590,22 +1590,24 @@ async function handleProcessImages(req, res) {
     const unprocessedEmployeeDocs = connectedEmployeeDocs.filter((employeeDoc) => {
       return !processed.some((result) => result.employeeId === employeeDoc.id);
     });
+    const failureMessage = skipped[0]?.reason || LIVE_VIBE_NO_EMPLOYEE_FOUND_MESSAGE;
+    const failureStatus = skipped.length ? 'processing_failed' : 'no_employee_found';
 
     if (unprocessedEmployeeDocs.length) {
       await closePendingCaptureRequests(
         unprocessedEmployeeDocs,
         requestId,
-        LIVE_VIBE_NO_EMPLOYEE_FOUND_MESSAGE,
+        failureStatus,
         {
-          message: LIVE_VIBE_NO_EMPLOYEE_FOUND_MESSAGE,
+          message: failureMessage,
         }
       );
     }
 
     if (!processed.length) {
       return res.json({
-        status: 'no_employee_found',
-        message: LIVE_VIBE_NO_EMPLOYEE_FOUND_MESSAGE,
+        status: failureStatus,
+        message: failureMessage,
         processed,
         skipped,
       });
