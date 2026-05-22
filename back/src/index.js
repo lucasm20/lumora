@@ -1006,6 +1006,10 @@ function getProcessErrorReason(error) {
   }
 
   if (error.code === 'vision/request-failed') {
+    if (error.status === 404) {
+      return 'Vision emotion request failed (404): Resource not found. Check that AZURE_VISION_ENDPOINT and AZURE_VISION_KEY belong to an Azure AI Vision / Computer Vision resource, not Face API or Azure OpenAI.';
+    }
+
     return `Vision emotion request failed${error.status ? ` (${error.status})` : ''}: ${
       error.message
     }`;

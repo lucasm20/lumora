@@ -23,6 +23,7 @@ AZURE_VISION_API_VERSION=2024-02-01
 
 `AZURE_VISION_ENDPOINT` debe ser el endpoint del recurso Azure AI Vision / Computer Vision,
 no un endpoint de Azure OpenAI como `*.openai.azure.com`.
+Tampoco debe ser un recurso Face API; el recurso debe soportar Image Analysis 4.0.
 
 ## Railway variables
 
@@ -36,6 +37,8 @@ AZURE_VISION_API_VERSION=2024-02-01
 
 El backend usa `AZURE_VISION_KEY` como header `Ocp-Apim-Subscription-Key` contra
 `/computervision/imageanalysis:analyze`. No usa `AZURE_OPENAI_API_KEY` para procesar imagenes.
+Si Railway devuelve `404 Resource not found`, revisa que la key y el endpoint sean del mismo
+recurso Azure AI Vision / Computer Vision y que no sean de Face API.
 
 4. Instala dependencias:
 
