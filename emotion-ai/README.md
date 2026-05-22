@@ -61,11 +61,27 @@ EMOTION_MODEL_DIR=./Luminar_balanced_emotion_model
 
 Deploy `emotion-ai` as a separate Railway service.
 
-Use:
+The service is configured for Python 3.11 with `runtime.txt`, `.python-version`,
+and `nixpacks.toml`. Dependencies are pinned for the local HuggingFace model:
 
 ```bash
-pip install -r requirements.txt
-uvicorn app:app --host 0.0.0.0 --port $PORT
+transformers==4.41.2
+torch==2.3.1
+safetensors==0.4.3
+```
+
+Start command:
+
+```bash
+uvicorn app:app --host 0.0.0.0 --port ${PORT:-8000}
+```
+
+The model weights are Git LFS files. Railway must fetch the real LFS files, not
+the small pointer files. `nixpacks.toml` runs:
+
+```bash
+git lfs install
+git lfs pull
 ```
 
 Then set the Node backend variable:
