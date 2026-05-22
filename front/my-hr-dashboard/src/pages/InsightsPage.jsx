@@ -1,8 +1,9 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { jsPDF } from 'jspdf';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useLanguage } from '../context/LanguageContext';
+import FilterLoader from '../components/FilterLoader';
 import { getEmployeeEmotionSummary, getEmployees, processActiveEmployeeEmotions } from '../services/api';
 import '../App.css';
 
@@ -533,6 +534,22 @@ const InsightsPage = () => {
   const [employeeDetail, setEmployeeDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState('');
+  const [filterLoading, setFilterLoading] = useState(false);
+  const filterTimeoutRef = useRef(null);
+
+  const showFilterLoader = () => {
+    setFilterLoading(true);
+    window.clearTimeout(filterTimeoutRef.current);
+    filterTimeoutRef.current = window.setTimeout(() => {
+      setFilterLoading(false);
+    }, 400);
+  };
+
+  useEffect(() => {
+    return () => {
+      window.clearTimeout(filterTimeoutRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     let isMounted = true;
@@ -846,6 +863,20 @@ const InsightsPage = () => {
     setDetailError('');
   };
 
+  const handlePeriodChange = (nextPeriod) => {
+    if (filterLoading || nextPeriod === period) {
+      return;
+    }
+
+    setPeriod(nextPeriod);
+    showFilterLoader();
+  };
+
+  const handleQueryChange = (event) => {
+    setQuery(event.target.value);
+    showFilterLoader();
+  };
+
   const handleLogout = async () => {
     await logout();
     navigate('/');
@@ -880,7 +911,7 @@ const InsightsPage = () => {
     <div className="dashboard-shell">
       <aside className="sidebar">
         <div className="sidebar-brand">
-          <div className="sidebar-logo">L</div>
+          <img className="sidebar-logo" src="/logo-lumora.jpg" alt="" />
           <span>LUMORA</span>
         </div>
         <div className="sidebar-items">
@@ -926,7 +957,8 @@ const InsightsPage = () => {
           </div>
         </header>
 
-        <section className="insights-panel">
+        <section className="insights-panel" aria-busy={filterLoading}>
+          {filterLoading && <FilterLoader />}
           <div className="insights-summary">
             <span className="insights-counter">{filteredEmployees.length}</span>
             <span className="insights-label">{t('recordsInPeriod', 'Records in selected period')}</span>
@@ -939,7 +971,8 @@ const InsightsPage = () => {
                   key={label}
                   className={`insights-tab${period === label ? ' active' : ''}`}
                   type="button"
-                  onClick={() => setPeriod(label)}
+                  onClick={() => handlePeriodChange(label)}
+                  disabled={filterLoading}
                 >
                   {t(`period.${label}`, label)}
                 </button>
@@ -952,7 +985,7 @@ const InsightsPage = () => {
                 type="search"
                 placeholder={t('searchPlaceholder', 'Search by name or role...')}
                 value={query}
-                onChange={(event) => setQuery(event.target.value)}
+                onChange={handleQueryChange}
               />
             </div>
 

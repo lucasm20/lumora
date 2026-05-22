@@ -97,6 +97,7 @@ const translations = {
       Today: 'Hoy',
       Week: 'Semana',
       Month: 'Mes',
+      Custom: 'Personalizado',
     },
     weekday: {
       Mon: 'Lun',

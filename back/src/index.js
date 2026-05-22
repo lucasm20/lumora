@@ -8,6 +8,7 @@ const app = express();
 const PORT = process.env.PORT || 4000;
 const DEFAULT_CLIENT_ORIGINS = [
   'http://localhost:5173',
+  'http://127.0.0.1:5173',
   'https://lumora-nine-olive.vercel.app',
   'https://lumora-668dbouqn-lucas-projects-ca67a672.vercel.app',
   'https://*.vercel.app',
@@ -52,6 +53,7 @@ const CAPTURE_REQUEST_WAIT_MS = Number(process.env.CAPTURE_REQUEST_WAIT_MS || 80
 const CAPTURE_REQUEST_POLL_MS = Number(process.env.CAPTURE_REQUEST_POLL_MS || 500);
 const CAPTURE_REQUEST_TTL_MS = Number(process.env.CAPTURE_REQUEST_TTL_MS || 30000);
 const CAMERA_SNAPSHOT_MAX_BYTES = Number(process.env.CAMERA_SNAPSHOT_MAX_BYTES || 10 * 1024 * 1024);
+const EMOTION_SERVICE_URL = (process.env.EMOTION_SERVICE_URL || 'http://localhost:8000').replace(/\/+$/, '');
 const LIVE_VIBE_NO_EMPLOYEE_FOUND_MESSAGE = 'No employee found';
 const EMOTION_LABELS = [
   'happy',
@@ -698,6 +700,27 @@ function normalizeEmotionName(emotion) {
   return EMOTION_LABELS.includes(normalized) ? normalized : 'stress';
 }
 
+function normalizeDashboardEmotion(emotion, fallback = 'neutral') {
+  const value = String(emotion || '').trim().toLowerCase();
+  const normalized = EMOTION_ALIASES[value] || value;
+
+  return EMOTION_LABELS.includes(normalized) ? normalized : fallback;
+}
+
+function createNeutralEmotionOutput(reason, raw = null) {
+  return {
+    dominant_emotion: 'neutral',
+    confidence: null,
+    reason,
+    raw,
+    provider: 'fallback-neutral',
+  };
+}
+
+function getEmotionServiceUrl() {
+  return `${EMOTION_SERVICE_URL}/predict-emotion`;
+}
+
 function getAzureVisionEndpoint() {
   return (process.env.AZURE_VISION_ENDPOINT || '').replace(/\/+$/, '');
 }
@@ -906,6 +929,82 @@ async function requestVisionEmotion(imageValue, employeeId, captureHints = null)
   };
 }
 
+async function requestLocalEmotion(imageValue, employeeId) {
+  const value = String(imageValue || '');
+
+  if (/^https?:\/\//i.test(value)) {
+    const error = new Error('Local emotion service expects base64 image payloads.');
+    error.code = 'local-emotion/unsupported-image-url';
+    throw error;
+  }
+
+  try {
+    const response = await axios.post(
+      getEmotionServiceUrl(),
+      {
+        imageBase64: value,
+        employeeId,
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        timeout: 45000,
+      }
+    );
+    const rawLabel = response.data?.rawLabel || response.data?.emotion;
+    const emotion = normalizeDashboardEmotion(rawLabel || response.data?.emotion, 'neutral');
+
+    return {
+      dominant_emotion: emotion,
+      confidence:
+        typeof response.data?.confidence === 'number' ? response.data.confidence : null,
+      rawLabel: response.data?.rawLabel || null,
+      raw: response.data,
+      provider: 'local-emotion-ai',
+      model: 'Luminar_balanced_emotion_model',
+    };
+  } catch (requestError) {
+    const error = new Error(
+      requestError.response?.data?.detail ||
+        requestError.response?.data?.message ||
+        requestError.message ||
+        'Local emotion service request failed.'
+    );
+    error.code = 'local-emotion/request-failed';
+    error.status = requestError.response?.status;
+    throw error;
+  }
+}
+
+async function requestEmotionClassification(imageValue, employeeId, captureHints = null) {
+  try {
+    return await requestLocalEmotion(imageValue, employeeId);
+  } catch (localError) {
+    console.warn('Local emotion service failed; falling back to Azure Vision:', {
+      employeeId,
+      code: localError.code,
+      status: localError.status,
+      message: localError.message,
+    });
+  }
+
+  try {
+    return await requestVisionEmotion(imageValue, employeeId, captureHints);
+  } catch (visionError) {
+    console.warn('Azure Vision fallback failed; using Neutral:', {
+      employeeId,
+      code: visionError.code,
+      status: visionError.status,
+      message: visionError.message,
+    });
+
+    return createNeutralEmotionOutput('Local emotion service and Azure Vision fallback failed.', {
+      visionError: getProcessErrorReason(visionError),
+    });
+  }
+}
+
 async function saveEmotionResult(employeeId, emotionData) {
   const timestamp = emotionData.capturedAt || new Date().toISOString();
 
@@ -936,10 +1035,11 @@ async function saveEmotionResult(employeeId, emotionData) {
 async function processEmotionForEmployee(employeeDoc, imageValue, captureHints = null) {
   const employeeData = employeeDoc.data();
   const sanitizedHints = sanitizeCaptureHints(captureHints);
-  const output = await requestVisionEmotion(imageValue, employeeDoc.id, sanitizedHints);
+  const output = await requestEmotionClassification(imageValue, employeeDoc.id, sanitizedHints);
   const modelEmotion = getDominantEmotion(output);
   const confidence = output?.confidence || null;
-  const isWeakNeutral = modelEmotion === 'neutral' && (!confidence || confidence < 0.7);
+  const canAdjustNeutral = output?.provider !== 'local-emotion-ai';
+  const isWeakNeutral = canAdjustNeutral && modelEmotion === 'neutral' && (!confidence || confidence < 0.7);
   const dominantEmotion =
     isWeakNeutral && sanitizedHints?.smileLikely
       ? 'happy'

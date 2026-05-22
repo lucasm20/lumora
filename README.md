@@ -28,7 +28,8 @@ Vite corre en `http://localhost:5173` y redirige `/api` al backend.
 
 - Configura Firebase Web en `front/my-hr-dashboard/.env`.
 - Configura Firebase Admin en `back/.env`.
-- Configura Azure OpenAI en `back/.env` con `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY` y `AZURE_OPENAI_DEPLOYMENT`.
+- Ejecuta `emotion-ai` y configura `EMOTION_SERVICE_URL` en `back/.env`.
+- Azure Vision es fallback opcional con `AZURE_VISION_ENDPOINT`, `AZURE_VISION_KEY` y `AZURE_VISION_API_VERSION`.
 - Las reglas de Firestore estan en `back/firestore.rules`.
 - El usuario HR fijo se crea con `npm run seed:hr --prefix back`.
 

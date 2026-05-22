@@ -1,8 +1,9 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { jsPDF } from 'jspdf';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useLanguage } from '../context/LanguageContext';
+import FilterLoader from '../components/FilterLoader';
 import {
   getEmotionalIntensity,
   getEmotionComparison,
@@ -911,6 +912,9 @@ const DashboardPage = () => {
   const [emotionalIntensity, setEmotionalIntensity] = useState(emptyIntensityDays);
   const [dashboardError, setDashboardError] = useState('');
   const [exportingPdf, setExportingPdf] = useState(false);
+  const [filterLoading, setFilterLoading] = useState(false);
+  const filterStartedAtRef = useRef(null);
+  const filterTimeoutRef = useRef(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -970,6 +974,19 @@ const DashboardPage = () => {
         if (isMounted) {
           setDashboardError(requestError.message || 'Could not load dashboard data.');
         }
+      } finally {
+        if (isMounted && filterStartedAtRef.current) {
+          const elapsed = Date.now() - filterStartedAtRef.current;
+          const remaining = Math.max(0, 400 - elapsed);
+
+          window.clearTimeout(filterTimeoutRef.current);
+          filterTimeoutRef.current = window.setTimeout(() => {
+            if (isMounted) {
+              setFilterLoading(false);
+              filterStartedAtRef.current = null;
+            }
+          }, remaining);
+        }
       }
     }
 
@@ -996,8 +1013,19 @@ const DashboardPage = () => {
       window.removeEventListener('emotion:update', handleDashboardRefresh);
       window.removeEventListener('focus', handleDashboardRefresh);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.clearTimeout(filterTimeoutRef.current);
     };
   }, [firebaseUser, selectedPeriod]);
+
+  const handlePeriodChange = (period) => {
+    if (filterLoading || period === selectedPeriod) {
+      return;
+    }
+
+    filterStartedAtRef.current = Date.now();
+    setFilterLoading(true);
+    setSelectedPeriod(period);
+  };
 
   const companyEmployees = useMemo(() => {
     return employees.filter((employee) => {
@@ -1231,7 +1259,7 @@ const DashboardPage = () => {
     <div className="dashboard-shell">
       <aside className="sidebar">
         <div className="sidebar-brand">
-          <div className="sidebar-logo">L</div>
+          <img className="sidebar-logo" src="/logo-lumora.jpg" alt="" />
           <span>LUMORA</span>
         </div>
         <div className="sidebar-items">
@@ -1264,7 +1292,8 @@ const DashboardPage = () => {
         </button>
       </aside>
 
-      <div className="dashboard-main">
+      <div className="dashboard-main" aria-busy={filterLoading}>
+        {filterLoading && <FilterLoader />}
         <header className="dashboard-top">
           <div>
             <h1 className="dashboard-title">{companyDisplayName}</h1>
@@ -1304,7 +1333,8 @@ const DashboardPage = () => {
                   className={`filter-chip${selectedPeriod === period ? ' active' : ''}`}
                   type="button"
                   key={period}
-                  onClick={() => setSelectedPeriod(period)}
+                  onClick={() => handlePeriodChange(period)}
+                  disabled={filterLoading}
                 >
                   {t(`period.${period}`, period)}
                 </button>
