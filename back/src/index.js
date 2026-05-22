@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
-const { auth, db, storage } = require('./firebaseAdmin');
+const { auth, db } = require('./firebaseAdmin');
 const { HR_USER, seedHrUser } = require('./hrUser');
 
 const app = express();
@@ -698,22 +698,65 @@ function normalizeEmotionName(emotion) {
   return EMOTION_LABELS.includes(normalized) ? normalized : 'stress';
 }
 
-function getAzureOpenAiEndpoint() {
-  return (process.env.AZURE_OPENAI_ENDPOINT || '').replace(/\/+$/, '');
+function getAzureVisionEndpoint() {
+  return (process.env.AZURE_VISION_ENDPOINT || '').replace(/\/+$/, '');
 }
 
-function getImageDataUrl(imageValue) {
-  const value = String(imageValue || '');
+function getAzureVisionConfig() {
+  return {
+    endpoint: getAzureVisionEndpoint(),
+    key: process.env.AZURE_VISION_KEY || '',
+    apiVersion: process.env.AZURE_VISION_API_VERSION || '2024-02-01',
+  };
+}
 
-  if (/^https?:\/\//i.test(value)) {
-    return value;
+function getAzureVisionMissingConfig(config = getAzureVisionConfig()) {
+  return [
+    !config.endpoint ? 'AZURE_VISION_ENDPOINT' : null,
+    !config.key ? 'AZURE_VISION_KEY' : null,
+  ].filter(Boolean);
+}
+
+function createVisionConfigError(message, code = 'vision/missing-config') {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function assertAzureVisionConfig(config = getAzureVisionConfig()) {
+  const missing = getAzureVisionMissingConfig(config);
+
+  if (missing.length) {
+    throw createVisionConfigError(
+      `Azure Vision configuration is missing: ${missing.join(', ')}.`
+    );
   }
 
-  if (value.startsWith('data:image/')) {
-    return value;
+  if (/openai\.azure\.com/i.test(config.endpoint)) {
+    throw createVisionConfigError(
+      'AZURE_VISION_ENDPOINT must be an Azure AI Vision / Computer Vision endpoint, not an Azure OpenAI endpoint.',
+      'vision/invalid-endpoint'
+    );
+  }
+}
+
+function validateAzureVisionStartupConfig() {
+  const config = getAzureVisionConfig();
+  const missing = getAzureVisionMissingConfig(config);
+
+  if (missing.length) {
+    console.warn(
+      `Azure Vision is not fully configured. Missing variables: ${missing.join(
+        ', '
+      )}. Process Images will fail until these are set.`
+    );
   }
 
-  return `data:image/jpeg;base64,${value}`;
+  if (config.endpoint && /openai\.azure\.com/i.test(config.endpoint)) {
+    console.warn(
+      'AZURE_VISION_ENDPOINT points to Azure OpenAI. Use the Azure AI Vision / Computer Vision endpoint instead.'
+    );
+  }
 }
 
 function getImagePayloadParts(imageValue) {
@@ -732,81 +775,73 @@ function getImagePayloadParts(imageValue) {
   return { buffer, contentType };
 }
 
-async function getVisionImageSource(imageValue, employeeId) {
-  const value = String(imageValue || '');
+function getAzureVisionAnalyzeUrl(endpoint, apiVersion) {
+  const params = new URLSearchParams({
+    'api-version': apiVersion,
+    features: 'caption,denseCaptions,tags,people',
+    'gender-neutral-caption': 'true',
+  });
 
-  if (/^https?:\/\//i.test(value)) {
-    return { imageUrl: value, cleanup: null };
-  }
-
-  if (!process.env.FIREBASE_STORAGE_BUCKET) {
-    return { imageUrl: getImageDataUrl(value), cleanup: null };
-  }
-
-  const { buffer, contentType } = getImagePayloadParts(value);
-  const extension = contentType.includes('png') ? 'png' : 'jpg';
-  const safeEmployeeId = String(employeeId || 'employee').replace(/[^a-zA-Z0-9._-]/g, '_');
-  const file = storage
-    .bucket()
-    .file(`vision-captures/${safeEmployeeId}-${Date.now()}.${extension}`);
-
-  try {
-    await file.save(buffer, {
-      resumable: false,
-      metadata: {
-        contentType,
-        cacheControl: 'private, max-age=300',
-      },
-    });
-
-    const [signedUrl] = await file.getSignedUrl({
-      action: 'read',
-      expires: Date.now() + 10 * 60 * 1000,
-      version: 'v4',
-    });
-
-    return {
-      imageUrl: signedUrl,
-      cleanup: async () => {
-        await file.delete({ ignoreNotFound: true });
-      },
-    };
-  } catch (error) {
-    console.warn('Firebase Storage signed URL unavailable, falling back to data URL:', error.message);
-    return { imageUrl: getImageDataUrl(value), cleanup: null };
-  }
+  return `${endpoint}/computervision/imageanalysis:analyze?${params.toString()}`;
 }
 
-function getAzureOpenAiChatUrl(endpoint, deployment, apiVersion) {
-  if (process.env.AZURE_OPENAI_USE_V1 === 'true') {
-    return `${endpoint}/openai/v1/chat/completions`;
-  }
+function getAzureVisionEvidence(data) {
+  const captions = [
+    data?.captionResult?.text,
+    ...(Array.isArray(data?.denseCaptionsResult?.values)
+      ? data.denseCaptionsResult.values.map((item) => item.text)
+      : []),
+  ].filter(Boolean);
+  const tags = Array.isArray(data?.tagsResult?.values)
+    ? data.tagsResult.values.map((item) => item.name).filter(Boolean)
+    : [];
 
-  return `${endpoint}/openai/deployments/${encodeURIComponent(
-    deployment
-  )}/chat/completions?api-version=${encodeURIComponent(apiVersion)}`;
+  return {
+    captions,
+    tags,
+    text: [...captions, ...tags].join(' ').toLowerCase(),
+  };
 }
 
-function parseVisionEmotionResponse(content) {
-  const text = String(content || '').trim();
-  const jsonText = text.match(/\{[\s\S]*\}/)?.[0] || text;
+function classifyAzureVisionEmotion(data, captureHints = null) {
+  const evidence = getAzureVisionEvidence(data);
+  const text = evidence.text;
+  const matchers = [
+    { emotion: 'happy', pattern: /\b(smile|smiling|happy|joy|laugh|laughing|grin|cheerful)\b/ },
+    { emotion: 'drowsiness', pattern: /\b(tired|sleepy|sleeping|drowsy|eyes closed|yawning|fatigue)\b/ },
+    { emotion: 'sad', pattern: /\b(sad|crying|tearful|unhappy|depressed)\b/ },
+    { emotion: 'angry', pattern: /\b(angry|mad|furious|annoyed|frown|frowning)\b/ },
+    { emotion: 'fear', pattern: /\b(scared|fear|fearful|afraid|anxious|worried)\b/ },
+    { emotion: 'surprise', pattern: /\b(surprised|surprise|shocked|astonished)\b/ },
+    { emotion: 'disgust', pattern: /\b(disgust|disgusted|grimace)\b/ },
+  ];
 
-  try {
-    const parsed = JSON.parse(jsonText);
+  if (captureHints?.smileLikely) {
     return {
-      dominant_emotion: normalizeEmotionName(parsed.emotion || parsed.dominant_emotion),
-      confidence: typeof parsed.confidence === 'number' ? parsed.confidence : null,
-      reason: typeof parsed.reason === 'string' ? parsed.reason : null,
-      rawText: text,
-    };
-  } catch (error) {
-    return {
-      dominant_emotion: normalizeEmotionName(text),
-      confidence: null,
-      reason: null,
-      rawText: text,
+      dominant_emotion: 'happy',
+      confidence: Math.max(0.72, Number(captureHints.smileScore) || 0.72),
+      reason: 'Local smile signal detected before Azure Vision analysis.',
+      rawText: evidence.text,
     };
   }
+
+  const matched = matchers.find((item) => item.pattern.test(text));
+
+  if (matched) {
+    return {
+      dominant_emotion: matched.emotion,
+      confidence: 0.72,
+      reason: `Azure Vision captions/tags matched ${matched.emotion}.`,
+      rawText: evidence.text,
+    };
+  }
+
+  return {
+    dominant_emotion: 'neutral',
+    confidence: 0.75,
+    reason: 'Azure Vision did not return a stronger expression signal.',
+    rawText: evidence.text,
+  };
 }
 
 function sanitizeCaptureHints(captureHints) {
@@ -829,70 +864,24 @@ function sanitizeCaptureHints(captureHints) {
 }
 
 async function requestVisionEmotion(imageValue, employeeId, captureHints = null) {
-  const endpoint = getAzureOpenAiEndpoint();
-  const apiKey = process.env.AZURE_OPENAI_API_KEY;
-  const deployment = process.env.AZURE_OPENAI_DEPLOYMENT;
-  const apiVersion = process.env.AZURE_OPENAI_API_VERSION || '2024-02-15-preview';
+  const config = getAzureVisionConfig();
+  assertAzureVisionConfig(config);
 
-  if (!endpoint || !apiKey || !deployment) {
-    const error = new Error('Azure OpenAI endpoint, API key, or deployment is not configured.');
-    error.code = 'vision/missing-config';
-    throw error;
-  }
-
-  const url = getAzureOpenAiChatUrl(endpoint, deployment, apiVersion);
-  const imageSource = await getVisionImageSource(imageValue, employeeId);
-  const hintText = captureHints
-    ? `Local visual pre-analysis: smileLikely=${captureHints.smileLikely}, smileScore=${
-        captureHints.smileScore ?? 'unknown'
-      }. Treat this as weak context only; the final label must come from the image.`
-    : 'No local visual pre-analysis is available.';
-  const payload = {
-    messages: [
-      {
-        role: 'system',
-        content:
-          'You classify the visible facial expression from an employee camera snapshot. Respond with JSON only.',
-      },
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'text',
-            text: `Choose exactly one emotion from this list: ${EMOTION_LABELS.join(
-              ', '
-            )}. Return JSON as {"emotion":"<one label>","confidence":0-1,"reason":"short visual reason"}. Pay close attention to mouth corners, visible teeth, raised cheeks, squinting eyes, eyebrows, eyelid openness, gaze direction, brow tension, facial tightness, and head posture. Do not overuse "neutral": choose "neutral" only when the face is relaxed, centered, eyes open, mouth flat, and there are no stronger cues. If there is any visible positive smile, choose "happy". If the person looks tense, concentrated, uncomfortable, tired, surprised, sad, angry, fearful, or disgusted, choose the closest non-neutral label even if confidence is moderate. ${hintText}`,
-          },
-          {
-            type: 'image_url',
-            image_url: {
-              url: imageSource.imageUrl,
-              detail: 'high',
-            },
-          },
-        ],
-      },
-    ],
-    temperature: 0,
-  };
-
-  if (/^gpt-5/i.test(deployment)) {
-    payload.max_completion_tokens = 120;
-  } else {
-    payload.max_tokens = 120;
-  }
-
-  if (process.env.AZURE_OPENAI_USE_V1 === 'true') {
-    payload.model = deployment;
-  }
+  const url = getAzureVisionAnalyzeUrl(config.endpoint, config.apiVersion);
+  const imagePayload = /^https?:\/\//i.test(String(imageValue || ''))
+    ? { body: { url: String(imageValue) }, contentType: 'application/json' }
+    : (() => {
+        const { buffer, contentType } = getImagePayloadParts(imageValue);
+        return { body: buffer, contentType };
+      })();
 
   let response;
 
   try {
-    response = await axios.post(url, payload, {
+    response = await axios.post(url, imagePayload.body, {
       headers: {
-        'api-key': apiKey,
-        'Content-Type': 'application/json',
+        'Ocp-Apim-Subscription-Key': config.key,
+        'Content-Type': imagePayload.contentType,
       },
       timeout: 30000,
     });
@@ -907,19 +896,13 @@ async function requestVisionEmotion(imageValue, employeeId, captureHints = null)
     error.code = 'vision/request-failed';
     error.status = requestError.response?.status;
     throw error;
-  } finally {
-    if (imageSource.cleanup) {
-      imageSource.cleanup().catch((cleanupError) => {
-        console.warn('Temporary vision image cleanup failed:', cleanupError.message);
-      });
-    }
   }
 
-  const content = response.data?.choices?.[0]?.message?.content;
   return {
-    ...parseVisionEmotionResponse(content),
-    provider: 'azure-openai',
-    model: deployment,
+    ...classifyAzureVisionEmotion(response.data, captureHints),
+    provider: 'azure-ai-vision',
+    model: `image-analysis-${config.apiVersion}`,
+    rawResponse: response.data,
   };
 }
 
@@ -1015,7 +998,11 @@ async function closePendingCaptureRequests(employeeDocs, requestId, status, fiel
 
 function getProcessErrorReason(error) {
   if (error.code === 'vision/missing-config') {
-    return 'Azure OpenAI endpoint, API key, or deployment is not configured.';
+    return 'Azure Vision endpoint or key is not configured.';
+  }
+
+  if (error.code === 'vision/invalid-endpoint') {
+    return error.message;
   }
 
   if (error.code === 'vision/request-failed') {
@@ -1454,10 +1441,8 @@ app.post('/api/emotions/process', authenticateRequest, async (req, res) => {
       message: error.message,
     });
 
-    if (error.code === 'vision/missing-config') {
-      return res
-        .status(503)
-        .json({ message: 'Azure OpenAI endpoint, API key, or deployment is not configured.' });
+    if (error.code === 'vision/missing-config' || error.code === 'vision/invalid-endpoint') {
+      return res.status(503).json({ message: getProcessErrorReason(error) });
     }
 
     return res.status(500).json({ message: getProcessErrorReason(error) });
@@ -1894,5 +1879,6 @@ app.get('/api/emotions/weekly-trend', authenticateRequest, async (req, res) => {
 });
 
 app.listen(PORT, () => {
+  validateAzureVisionStartupConfig();
   console.log(`API server listening on http://localhost:${PORT}`);
 });

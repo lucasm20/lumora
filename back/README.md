@@ -13,16 +13,29 @@ Usuario configurado:
 
 1. Copia `.env.example` a `.env`.
 2. Configura `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY` y `FIREBASE_STORAGE_BUCKET` con valores vigentes.
-3. Configura Azure OpenAI con un modelo visual en `.env`:
+3. Configura Azure AI Vision / Computer Vision en `.env`:
 
 ```bash
-AZURE_OPENAI_ENDPOINT=https://your-openai-resource.openai.azure.com
-AZURE_OPENAI_API_KEY=your_azure_openai_api_key
-AZURE_OPENAI_DEPLOYMENT=your_gpt4o_or_gpt41_deployment
-AZURE_OPENAI_API_VERSION=2024-02-15-preview
+AZURE_VISION_ENDPOINT=https://your-vision-resource.cognitiveservices.azure.com
+AZURE_VISION_KEY=your_azure_vision_key
+AZURE_VISION_API_VERSION=2024-02-01
 ```
 
-El deployment debe aceptar imagenes, por ejemplo GPT-4o o GPT-4.1.
+`AZURE_VISION_ENDPOINT` debe ser el endpoint del recurso Azure AI Vision / Computer Vision,
+no un endpoint de Azure OpenAI como `*.openai.azure.com`.
+
+## Railway variables
+
+Configura estas variables en el servicio backend de Railway:
+
+```bash
+AZURE_VISION_ENDPOINT=https://your-vision-resource.cognitiveservices.azure.com
+AZURE_VISION_KEY=your_azure_vision_key
+AZURE_VISION_API_VERSION=2024-02-01
+```
+
+El backend usa `AZURE_VISION_KEY` como header `Ocp-Apim-Subscription-Key` contra
+`/computervision/imageanalysis:analyze`. No usa `AZURE_OPENAI_API_KEY` para procesar imagenes.
 
 4. Instala dependencias:
 
