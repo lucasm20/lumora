@@ -21,11 +21,8 @@ ALLOWED_EMOTIONS = {
     "happy": "Happy",
     "neutral": "Neutral",
     "stress": "Stress",
-    "sad": "Sad",
     "angry": "Angry",
     "fear": "Fear",
-    "surprise": "Surprise",
-    "disgust": "Disgust",
     "drowsiness": "Drowsiness",
 }
 
@@ -234,11 +231,12 @@ def classify_image(image: Image.Image) -> dict:
         confidence, predicted_id = torch.max(probabilities, dim=0)
 
     raw_label = model.config.id2label.get(int(predicted_id), str(int(predicted_id)))
+    emotion = normalize_emotion(raw_label)
 
     return {
-        "emotion": normalize_emotion(raw_label),
+        "emotion": emotion,
         "confidence": round(float(confidence.item()), 4),
-        "rawLabel": str(raw_label).strip().lower(),
+        "rawLabel": emotion.lower(),
     }
 
 

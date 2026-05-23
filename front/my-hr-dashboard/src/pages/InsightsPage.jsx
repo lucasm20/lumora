@@ -11,11 +11,8 @@ const EMOTION_COLORS = {
   happy: '#22c55e',
   neutral: '#94a3b8',
   stress: '#f97316',
-  sad: '#2f80ed',
   angry: '#ef4444',
   fear: '#8b5cf6',
-  surprise: '#14b8a6',
-  disgust: '#f5b400',
   drowsiness: '#4f46e5',
 };
 
@@ -23,13 +20,12 @@ const emotionItems = [
   { key: 'happy', label: 'Happy', color: EMOTION_COLORS.happy },
   { key: 'neutral', label: 'Neutral', color: EMOTION_COLORS.neutral },
   { key: 'stress', label: 'Stress', color: EMOTION_COLORS.stress },
-  { key: 'sad', label: 'Sad', color: EMOTION_COLORS.sad },
   { key: 'angry', label: 'Angry', color: EMOTION_COLORS.angry },
   { key: 'fear', label: 'Fear', color: EMOTION_COLORS.fear },
-  { key: 'surprise', label: 'Surprise', color: EMOTION_COLORS.surprise },
-  { key: 'disgust', label: 'Disgust', color: EMOTION_COLORS.disgust },
   { key: 'drowsiness', label: 'Drowsiness', color: EMOTION_COLORS.drowsiness },
 ];
+const allowedEmotionKeys = new Set(emotionItems.map((emotion) => emotion.key));
+const LIVE_VIBE_NOT_FOUND = 'no_found';
 
 const emptyCounts = emotionItems.reduce((counts, item) => {
   counts[item.key] = 0;
@@ -70,7 +66,27 @@ function normalizeMetricPercent(value) {
 }
 
 function getEmployeeLiveVibe(employee) {
-  return employee?.lastEmotion || employee?.liveVibe || employee?.emotion || employee?.dominantEmotion || employee?.vibe || '';
+  const value =
+    employee?.liveVibe ||
+    employee?.lastEmotion ||
+    employee?.emotion ||
+    employee?.dominantEmotion ||
+    employee?.vibe ||
+    '';
+  const normalized = String(value).trim().toLowerCase();
+  if (normalized === LIVE_VIBE_NOT_FOUND) {
+    return LIVE_VIBE_NOT_FOUND;
+  }
+
+  return allowedEmotionKeys.has(normalized) ? normalized : '';
+}
+
+function getLiveVibeLabel(t, liveVibe, fallback = 'Pending') {
+  if (liveVibe === LIVE_VIBE_NOT_FOUND) {
+    return t('emotion.no_found', 'No found');
+  }
+
+  return t(`emotion.${liveVibe}`, liveVibe || fallback);
 }
 
 function getEmployeeSyncDate(employee) {
@@ -616,12 +632,12 @@ const InsightsPage = () => {
       const results = response.processed || [];
       const skipped = response.skipped || [];
 
-      if (response.status === 'no_employee_found' || (!results.length && !skipped.length)) {
+      if (response.status === 'no_employee_found' && !skipped.length) {
         setProcessSummary(response.message || NO_EMPLOYEE_FOUND_MESSAGE);
         return;
       }
 
-      if (!results.length) {
+      if (!results.length && !skipped.length) {
         setProcessSummary(response.message || NO_EMPLOYEE_FOUND_MESSAGE);
         return;
       }
@@ -639,11 +655,11 @@ const InsightsPage = () => {
             ...employee,
             lastEmotion: update?.emotion || employee.lastEmotion,
             lastEmotionAt: update?.capturedAt || employee.lastEmotionAt,
-            liveVibe: update?.emotion || employee.liveVibe,
-            liveVibeAt: update?.capturedAt || employee.liveVibeAt,
+            liveVibe: update?.emotion || skip?.liveVibe || employee.liveVibe,
+            liveVibeAt: update?.capturedAt || skip?.capturedAt || employee.liveVibeAt,
             emotion: update?.emotion || employee.emotion,
             emotionAt: update?.capturedAt || employee.emotionAt,
-            latestCameraFrameAt: update?.frameCapturedAt || skip?.capturedAt || employee.latestCameraFrameAt,
+            latestCameraFrameAt: update?.frameCapturedAt || skip?.frameCapturedAt || skip?.capturedAt || employee.latestCameraFrameAt,
           };
         })
       );
@@ -758,7 +774,7 @@ const InsightsPage = () => {
         const total = getCountsTotal(counts);
         const weeklyDays = summary?.weeklyTrend?.days?.length ? summary.weeklyTrend.days : emptyTrendDays;
         const employeeName = employee.username || 'Employee';
-        const liveVibe = getEmployeeLiveVibe(employee) || 'Pending';
+        const liveVibe = getLiveVibeLabel(t, getEmployeeLiveVibe(employee), 'Pending');
         const lastSync = formatEmployeeSyncDate(employee);
         const summaryText = total ? getAuditSummary(employeeName, distribution) : 'No data available.';
 
@@ -892,7 +908,8 @@ const InsightsPage = () => {
   const detailWeeklyDays = employeeDetail?.weeklyTrend?.days?.length ? employeeDetail.weeklyTrend.days : emptyTrendDays;
   const detailComparison = employeeDetail?.comparison || { current: emptyCounts, previous: emptyCounts };
   const detailIntensityDays = employeeDetail?.intensity?.days?.length ? employeeDetail.intensity.days : emptyIntensityDays;
-  const currentVibe = getEmployeeLiveVibe(detailEmployee) || t('pending', 'Pending');
+  const currentVibe = getEmployeeLiveVibe(detailEmployee);
+  const currentVibeLabel = getLiveVibeLabel(t, currentVibe, t('pending', 'Pending'));
   const lastSync =
     detailEmployee?.latestCameraFrameAt ||
     detailEmployee?.lastEmotionAt ||
@@ -907,7 +924,7 @@ const InsightsPage = () => {
     { label: t('pending', 'Pending'), count: 0 }
   );
   const clinicalSummary = validLiveVibeCount
-    ? `${detailEmployee?.username || t('employee', 'Employee')} ${language === 'es' ? 'tiene tendencia' : 'currently trends'} ${t(`emotion.${dominantEmotion.label}`, dominantEmotion.label)}. ${t('liveVibe', 'Live Vibe')}: ${t(`emotion.${currentVibe}`, currentVibe)}. ${validLiveVibeCount} ${t('records', 'records')}.`
+    ? `${detailEmployee?.username || t('employee', 'Employee')} ${language === 'es' ? 'tiene tendencia' : 'currently trends'} ${t(`emotion.${dominantEmotion.label}`, dominantEmotion.label)}. ${t('liveVibe', 'Live Vibe')}: ${currentVibeLabel}. ${validLiveVibeCount} ${t('records', 'records')}.`
     : language === 'es'
       ? 'Aun no hay historial individual de Vibra en Vivo. Procesa imagenes para generar un resumen especifico.'
       : 'No individual Live Vibe history is available yet. Process Images to generate an employee-specific summary.';
@@ -1050,7 +1067,7 @@ const InsightsPage = () => {
                 <span className="insights-vibe">
                   {(() => {
                     const liveVibe = getEmployeeLiveVibe(employee);
-                    return t(`emotion.${liveVibe}`, liveVibe || t('pending', 'Pending'));
+                    return getLiveVibeLabel(t, liveVibe, t('pending', 'Pending'));
                   })()}
                 </span>
                 <span className="insights-tag">{employee.cameraOn ? t('on', 'On') : t('off', 'Off')}</span>
@@ -1081,7 +1098,7 @@ const InsightsPage = () => {
             <div className="employee-drawer-metrics">
               <div>
                 <span>{t('liveVibe', 'Live Vibe')}</span>
-                <strong>{t(`emotion.${currentVibe}`, currentVibe)}</strong>
+                <strong>{currentVibeLabel}</strong>
               </div>
               <div>
                 <span>{t('lastSync', 'Last Sync')}</span>

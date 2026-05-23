@@ -60,22 +60,19 @@ const CAPTURE_REQUEST_TTL_MS = Number(process.env.CAPTURE_REQUEST_TTL_MS || 3000
 const CAMERA_SNAPSHOT_MAX_BYTES = Number(process.env.CAMERA_SNAPSHOT_MAX_BYTES || 10 * 1024 * 1024);
 const EMOTION_SERVICE_URL = (process.env.EMOTION_SERVICE_URL || 'http://localhost:8000').replace(/\/+$/, '');
 const LIVE_VIBE_NO_EMPLOYEE_FOUND_MESSAGE = 'No employee found';
+const LIVE_VIBE_NOT_FOUND = 'no_found';
+const LIVE_VIBE_NOT_FOUND_MESSAGE = 'No found';
 const EMOTION_LABELS = [
   'happy',
   'neutral',
   'stress',
-  'sad',
   'angry',
   'fear',
-  'surprise',
-  'disgust',
   'drowsiness',
 ];
 const EMOTION_ALIASES = {
   anger: 'angry',
   angry: 'angry',
-  disgust: 'disgust',
-  disgusted: 'disgust',
   drowsiness: 'drowsiness',
   drowsy: 'drowsiness',
   fear: 'fear',
@@ -83,16 +80,12 @@ const EMOTION_ALIASES = {
   happy: 'happy',
   joy: 'happy',
   neutral: 'neutral',
-  sad: 'sad',
-  sadness: 'sad',
   stress: 'stress',
   stressed: 'stress',
-  surprise: 'surprise',
-  surprised: 'surprise',
 };
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const WEEKDAY_ORDER = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-const INTENSITY_EMOTIONS = new Set(['stress', 'sad', 'drowsiness']);
+const INTENSITY_EMOTIONS = new Set(['stress', 'drowsiness']);
 const ANALYTICS_TIME_ZONE = process.env.ANALYTICS_TIME_ZONE || 'America/Lima';
 const TIME_ZONE_DATE_FORMATTER = new Intl.DateTimeFormat('en-US', {
   timeZone: ANALYTICS_TIME_ZONE,
@@ -118,6 +111,8 @@ const TIME_ZONE_WEEKDAY_FORMATTER = new Intl.DateTimeFormat('en-US', {
 let companiesCache = null;
 let companiesCacheExpiresAt = 0;
 let companiesSeedPromise = null;
+const DASHBOARD_CACHE_TTL_MS = Number(process.env.DASHBOARD_CACHE_TTL_MS || 15000);
+const dashboardCache = new Map();
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -271,6 +266,28 @@ function getAuthErrorResponse(error) {
   return responses[error.code] || {
     status: 500,
     message: 'No se pudo completar la operacion de Firebase Authentication.',
+  };
+}
+
+function isFirebaseAuthError(error) {
+  return typeof error?.code === 'string' && error.code.startsWith('auth/');
+}
+
+function getServiceErrorResponse(error, fallbackMessage) {
+  const code = String(error?.code || '');
+  const message = String(error?.message || '');
+
+  if (code === '8' || /RESOURCE_EXHAUSTED|quota exceeded/i.test(message)) {
+    return {
+      status: 503,
+      message:
+        'Firebase quota exceeded. Wait for the Firestore quota to reset or increase the Firebase plan/quota.',
+    };
+  }
+
+  return {
+    status: 500,
+    message: fallbackMessage,
   };
 }
 
@@ -619,6 +636,20 @@ function clearCompaniesCache() {
   companiesCacheExpiresAt = 0;
 }
 
+function clearDashboardCache(companyName = '') {
+  if (!companyName) {
+    dashboardCache.clear();
+    return;
+  }
+
+  const prefix = `${companyName}::`;
+  Array.from(dashboardCache.keys()).forEach((key) => {
+    if (key.startsWith(prefix)) {
+      dashboardCache.delete(key);
+    }
+  });
+}
+
 async function findUserByUsername(username) {
   const snapshot = await db
     .collection('users')
@@ -666,7 +697,6 @@ function normalizeEmotionName(emotion) {
   const aliases = {
     anger: 'angry',
     happiness: 'happy',
-    sadness: 'sad',
     sleepy: 'drowsiness',
     tired: 'drowsiness',
     anxiety: 'fear',
@@ -810,11 +840,8 @@ function classifyAzureVisionEmotion(data, captureHints = null) {
   const matchers = [
     { emotion: 'happy', pattern: /\b(smile|smiling|happy|joy|laugh|laughing|grin|cheerful)\b/ },
     { emotion: 'drowsiness', pattern: /\b(tired|sleepy|sleeping|drowsy|eyes closed|yawning|fatigue)\b/ },
-    { emotion: 'sad', pattern: /\b(sad|crying|tearful|unhappy|depressed)\b/ },
     { emotion: 'angry', pattern: /\b(angry|mad|furious|annoyed|frown|frowning)\b/ },
     { emotion: 'fear', pattern: /\b(scared|fear|fearful|afraid|anxious|worried)\b/ },
-    { emotion: 'surprise', pattern: /\b(surprised|surprise|shocked|astonished)\b/ },
-    { emotion: 'disgust', pattern: /\b(disgust|disgusted|grimace)\b/ },
   ];
 
   if (captureHints?.smileLikely) {
@@ -991,7 +1018,7 @@ async function saveEmotionResult(employeeId, emotionData) {
       lastEmotion: emotionData.emotion,
       lastEmotionAt: timestamp,
       lastEmotionConfidence: emotionData.confidence || null,
-      lastEmotionRaw: emotionData.raw || null,
+      lastEmotionRaw: null,
       liveVibe: emotionData.emotion,
       liveVibeAt: timestamp,
       emotion: emotionData.emotion,
@@ -1005,14 +1032,35 @@ async function saveEmotionResult(employeeId, emotionData) {
     companyName: emotionData.companyName || null,
     emotion: emotionData.emotion,
     confidence: emotionData.confidence || null,
-    raw: emotionData.raw || null,
     capturedAt: timestamp,
     createdAt: new Date().toISOString(),
   });
+  clearDashboardCache(emotionData.companyName || '');
 
   return {
     eventId: eventRef.id,
     capturedAt: timestamp,
+  };
+}
+
+async function saveLiveVibeNotFound(employeeId, fields = {}) {
+  const timestamp = fields.capturedAt || new Date().toISOString();
+
+  await db.collection('users').doc(employeeId).set(
+    {
+      liveVibe: LIVE_VIBE_NOT_FOUND,
+      liveVibeAt: timestamp,
+      latestCameraFrameAt: fields.frameCapturedAt || timestamp,
+    },
+    { merge: true }
+  );
+
+  return {
+    employeeId,
+    liveVibe: LIVE_VIBE_NOT_FOUND,
+    message: LIVE_VIBE_NOT_FOUND_MESSAGE,
+    capturedAt: timestamp,
+    frameCapturedAt: fields.frameCapturedAt || timestamp,
   };
 }
 
@@ -1139,6 +1187,12 @@ async function authenticateRequest(req, res, next) {
     req.userProfile = sanitizeUser(userDoc);
     return next();
   } catch (error) {
+    const serviceError = getServiceErrorResponse(error, '');
+
+    if (serviceError.status !== 500) {
+      return res.status(serviceError.status).json({ message: serviceError.message });
+    }
+
     return res.status(401).json({ message: 'Invalid or expired Firebase ID token.' });
   }
 }
@@ -1173,7 +1227,8 @@ app.get('/api/companies', async (req, res) => {
       .set('Cache-Control', refreshRequested ? 'no-store' : 'private, max-age=10')
       .json({ companies, cached: false });
   } catch (error) {
-    return res.status(500).json({ message: 'Could not load companies.' });
+    const response = getServiceErrorResponse(error, 'Could not load companies.');
+    return res.status(response.status).json({ message: response.message });
   }
 });
 
@@ -1222,12 +1277,13 @@ app.post('/api/auth/login', async (req, res) => {
       message: error.message,
     });
 
-    if (error.code?.startsWith('auth/')) {
+    if (isFirebaseAuthError(error)) {
       const response = getAuthErrorResponse(error);
       return res.status(response.status).json({ message: response.message });
     }
 
-    return res.status(500).json({ message: 'Could not complete login.' });
+    const response = getServiceErrorResponse(error, 'Could not complete login.');
+    return res.status(response.status).json({ message: response.message });
   }
 });
 
@@ -1553,6 +1609,10 @@ async function handleProcessImages(req, res) {
     const connectedEmployeeDocs = employeeDocs.filter((doc) => doc.data().cameraOn === true);
 
     if (!connectedEmployeeDocs.length) {
+      const notFoundUpdates = await Promise.all(
+        employeeDocs.map((employeeDoc) => saveLiveVibeNotFound(employeeDoc.id))
+      );
+
       await closePendingCaptureRequests(employeeDocs, null, LIVE_VIBE_NO_EMPLOYEE_FOUND_MESSAGE, {
         message: LIVE_VIBE_NO_EMPLOYEE_FOUND_MESSAGE,
       });
@@ -1561,7 +1621,10 @@ async function handleProcessImages(req, res) {
         status: 'no_employee_found',
         message: LIVE_VIBE_NO_EMPLOYEE_FOUND_MESSAGE,
         processed: [],
-        skipped: [],
+        skipped: notFoundUpdates.map((item) => ({
+          ...item,
+          reason: LIVE_VIBE_NOT_FOUND_MESSAGE,
+        })),
       });
     }
 
@@ -1675,10 +1738,34 @@ async function handleProcessImages(req, res) {
       );
     }
 
+    if (skipped.length) {
+      const notFoundByEmployee = new Map(
+        await Promise.all(
+          skipped.map(async (item) => {
+            const notFound = await saveLiveVibeNotFound(item.employeeId, {
+              capturedAt: item.capturedAt || new Date().toISOString(),
+              frameCapturedAt: item.capturedAt || null,
+            });
+
+            return [item.employeeId, notFound];
+          })
+        )
+      );
+
+      skipped.forEach((item, index) => {
+        const notFound = notFoundByEmployee.get(item.employeeId);
+        skipped[index] = {
+          ...item,
+          ...notFound,
+          reason: LIVE_VIBE_NOT_FOUND_MESSAGE,
+        };
+      });
+    }
+
     if (!processed.length) {
       return res.json({
         status: failureStatus,
-        message: failureMessage,
+        message: skipped[0]?.reason || failureMessage,
         processed,
         skipped,
       });
@@ -1725,7 +1812,80 @@ app.get('/api/employees', authenticateRequest, async (req, res) => {
 
     return res.json({ employees });
   } catch (error) {
-    return res.status(500).json({ message: 'Could not load employees.' });
+    const response = getServiceErrorResponse(error, 'Could not load employees.');
+    return res.status(response.status).json({ message: response.message });
+  }
+});
+
+async function getDashboardPayload(req) {
+  const period = req.query.period || 'week';
+  const companyName = req.userProfile.companyName;
+  const cacheKey = `${companyName}::${period}`;
+  const cached = dashboardCache.get(cacheKey);
+
+  if (cached && cached.expiresAt > Date.now()) {
+    return {
+      ...cached.payload,
+      cached: true,
+    };
+  }
+
+  const startDate = getPeriodStart(period);
+  const now = new Date();
+  const [employeesSnapshot, eventsSnapshot] = await Promise.all([
+    db.collection('users').where('companyName', '==', companyName).get(),
+    db.collection('emotionEvents').where('companyName', '==', companyName).get(),
+  ]);
+  const employeeDocs = employeesSnapshot.docs.filter((doc) => {
+    return normalizeValue(doc.data().role) === 'employee';
+  });
+  const employeeIds = new Set(employeeDocs.map((doc) => doc.id));
+  const employees = employeeDocs
+    .map(sanitizeEmployee)
+    .sort((left, right) => left.username.localeCompare(right.username));
+  const events = eventsSnapshot.docs
+    .map((doc) => ({ id: doc.id, ...doc.data() }))
+    .filter((event) => employeeIds.has(event.employeeId));
+  const filteredEvents = filterEventsByPeriod(events, period);
+  const payload = {
+    employees,
+    weeklyTrend: createWeeklyTrend(filteredEvents),
+    distribution: createEmotionDistribution(employeeDocs, filteredEvents, false),
+    comparison: createCurrentVsPreviousComparison(employeeDocs, events, {
+      currentStart: startDate,
+      currentEnd: now,
+    }),
+    intensity: createEmotionalIntensityTrend(employeeDocs, events, period),
+    range: {
+      start: startDate.toISOString(),
+      end: now.toISOString(),
+      period,
+    },
+    cached: false,
+  };
+
+  dashboardCache.set(cacheKey, {
+    expiresAt: Date.now() + DASHBOARD_CACHE_TTL_MS,
+    payload,
+  });
+
+  return payload;
+}
+
+app.get('/api/dashboard', authenticateRequest, async (req, res) => {
+  if (req.userProfile.role !== 'hr') {
+    return res.status(403).json({ message: 'Only HR admins can read dashboard data.' });
+  }
+
+  try {
+    return res.json(await getDashboardPayload(req));
+  } catch (error) {
+    console.error('Dashboard lookup failed:', {
+      code: error.code,
+      message: error.message,
+    });
+    const response = getServiceErrorResponse(error, 'Could not load dashboard data.');
+    return res.status(response.status).json({ message: response.message });
   }
 });
 
@@ -1822,7 +1982,8 @@ app.get('/api/emotions/distribution', authenticateRequest, async (req, res) => {
       code: error.code,
       message: error.message,
     });
-    return res.status(500).json({ message: 'Could not load emotion distribution.' });
+    const response = getServiceErrorResponse(error, 'Could not load emotion distribution.');
+    return res.status(response.status).json({ message: response.message });
   }
 });
 
@@ -1871,7 +2032,8 @@ app.get('/api/emotions/current-vs-previous', authenticateRequest, async (req, re
       code: error.code,
       message: error.message,
     });
-    return res.status(500).json({ message: 'Could not load emotion comparison.' });
+    const response = getServiceErrorResponse(error, 'Could not load emotion comparison.');
+    return res.status(response.status).json({ message: response.message });
   }
 });
 
@@ -1908,7 +2070,8 @@ app.get('/api/emotions/intensity', authenticateRequest, async (req, res) => {
       code: error.code,
       message: error.message,
     });
-    return res.status(500).json({ message: 'Could not load emotional intensity.' });
+    const response = getServiceErrorResponse(error, 'Could not load emotional intensity.');
+    return res.status(response.status).json({ message: response.message });
   }
 });
 
@@ -1960,7 +2123,8 @@ app.get('/api/emotions/weekly-trend', authenticateRequest, async (req, res) => {
       code: error.code,
       message: error.message,
     });
-    return res.status(500).json({ message: 'Could not load weekly emotion trend.' });
+    const response = getServiceErrorResponse(error, 'Could not load weekly emotion trend.');
+    return res.status(response.status).json({ message: response.message });
   }
 });
 

@@ -25,11 +25,11 @@ function parseJsonBody(body) {
   }
 }
 
-function normalizeApiErrorMessage(path, message, payload) {
+function normalizeApiErrorMessage(path, message, payload, status) {
   const fallbackMessage = message || 'Request failed.';
   const normalizedMessage = String(fallbackMessage).toLowerCase();
 
-  if (path === '/auth/login') {
+  if (path === '/auth/login' && status === 401) {
     return 'Invalid username or password.';
   }
 
@@ -79,7 +79,7 @@ async function request(path, options = {}) {
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    throw new Error(normalizeApiErrorMessage(path, data.message, payload));
+    throw new Error(normalizeApiErrorMessage(path, data.message, payload, response.status));
   }
 
   return data;
@@ -221,6 +221,16 @@ export async function getSession(idToken) {
 
 export async function getEmployees(idToken) {
   return request('/employees', {
+    headers: {
+      Authorization: `Bearer ${idToken}`,
+    },
+  });
+}
+
+export async function getDashboardData(idToken, period = 'Week') {
+  const params = new URLSearchParams({ period });
+
+  return request(`/dashboard?${params.toString()}`, {
     headers: {
       Authorization: `Bearer ${idToken}`,
     },

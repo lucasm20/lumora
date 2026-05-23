@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { useLanguage } from '../context/LanguageContext';
 import FilterLoader from '../components/FilterLoader';
 import {
+  getDashboardData,
   getEmotionalIntensity,
   getEmotionComparison,
   getEmotionDistribution,
@@ -17,11 +18,8 @@ const EMOTION_COLORS = {
   happy: '#22c55e',
   neutral: '#94a3b8',
   stress: '#f97316',
-  sad: '#2f80ed',
   angry: '#ef4444',
   fear: '#8b5cf6',
-  surprise: '#14b8a6',
-  disgust: '#f5b400',
   drowsiness: '#4f46e5',
 };
 
@@ -29,11 +27,8 @@ const emotionItems = [
   { key: 'happy', label: 'HAPPY', display: 'Happy', tone: EMOTION_COLORS.happy, emoji: '\u{1F60A}' },
   { key: 'neutral', label: 'NEUTRAL', display: 'Neutral', tone: EMOTION_COLORS.neutral, emoji: '\u{1F610}' },
   { key: 'stress', label: 'STRESS', display: 'Stress', tone: EMOTION_COLORS.stress, emoji: '\u{1F62B}' },
-  { key: 'sad', label: 'SAD', display: 'Sad', tone: EMOTION_COLORS.sad, emoji: '\u{1F622}' },
   { key: 'angry', label: 'ANGRY', display: 'Angry', tone: EMOTION_COLORS.angry, emoji: '\u{1F620}' },
   { key: 'fear', label: 'FEAR', display: 'Fear', tone: EMOTION_COLORS.fear, emoji: '\u{1F628}' },
-  { key: 'surprise', label: 'SURPRISE', display: 'Surprise', tone: EMOTION_COLORS.surprise, emoji: '\u{1F632}' },
-  { key: 'disgust', label: 'DISGUST', display: 'Disgust', tone: EMOTION_COLORS.disgust, emoji: '\u{1F922}' },
   { key: 'drowsiness', label: 'DROWSINESS', display: 'Drowsiness', tone: EMOTION_COLORS.drowsiness, emoji: '\u{1F634}' },
 ];
 
@@ -43,8 +38,6 @@ const weekdayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const emotionAliases = {
   anger: 'angry',
   angry: 'angry',
-  disgust: 'disgust',
-  disgusted: 'disgust',
   drowsiness: 'drowsiness',
   drowsy: 'drowsiness',
   fear: 'fear',
@@ -52,12 +45,8 @@ const emotionAliases = {
   happy: 'happy',
   joy: 'happy',
   neutral: 'neutral',
-  sad: 'sad',
-  sadness: 'sad',
   stress: 'stress',
   stressed: 'stress',
-  surprise: 'surprise',
-  surprised: 'surprise',
 };
 
 const emptyEmotionCounts = emotionItems.reduce((counts, item) => {
@@ -118,6 +107,27 @@ function getEmotionPercent(counts = {}, emotionKey) {
 function normalizeMetricPercent(value) {
   const numericValue = Number(value) || 0;
   return numericValue <= 1 ? numericValue * 100 : numericValue;
+}
+
+function normalizeComparisonData(comparisonData) {
+  const currentComparison = {
+    ...emptyEmotionCounts,
+    ...(comparisonData?.current || {}),
+  };
+  const hasCurrentComparison = getCountsTotal(currentComparison) > 0;
+
+  return {
+    current: currentComparison,
+    previous: hasCurrentComparison && comparisonData?.previous ? { ...emptyEmotionCounts, ...comparisonData.previous } : null,
+    previousAvailable: hasCurrentComparison && Boolean(comparisonData?.previousAvailable),
+    previousAvailableByEmotion: hasCurrentComparison
+      ? {
+          ...emptyEmotionCounts,
+          ...(comparisonData?.previousAvailableByEmotion || {}),
+        }
+      : { ...emptyEmotionCounts },
+    maxValue: hasCurrentComparison ? Number(comparisonData?.maxValue) || 0 : 0,
+  };
 }
 
 function buildDominantVibeStyle(emotionStats) {
@@ -933,13 +943,12 @@ const DashboardPage = () => {
 
       try {
         const token = await firebaseUser.getIdToken();
-        const [employeesData, trendData, distributionData, comparisonData, intensityData] = await Promise.all([
-          getEmployees(token),
-          getWeeklyEmotionTrend(token, selectedPeriod),
-          getEmotionDistribution(token, selectedPeriod).catch(() => emptyEmotionDistribution),
-          getEmotionComparison(token, selectedPeriod).catch(() => null),
-          getEmotionalIntensity(token, selectedPeriod).catch(() => null),
-        ]);
+        const dashboardData = await getDashboardData(token, selectedPeriod);
+        const employeesData = { employees: dashboardData.employees };
+        const trendData = dashboardData.weeklyTrend || { days: emptyTrendDays, maxValue: 0 };
+        const distributionData = dashboardData.distribution || emptyEmotionDistribution;
+        const comparisonData = dashboardData.comparison || null;
+        const intensityData = dashboardData.intensity || null;
 
         if (isMounted) {
           setEmployees(Array.isArray(employeesData.employees) ? employeesData.employees : []);
@@ -949,24 +958,7 @@ const DashboardPage = () => {
             maxValue: Number(trendData.maxValue) || 0,
           });
           setEmotionDistribution(distributionData);
-          const currentComparison = {
-            ...emptyEmotionCounts,
-            ...(comparisonData?.current || {}),
-          };
-          const hasCurrentComparison = getCountsTotal(currentComparison) > 0;
-
-          setEmotionComparison({
-            current: currentComparison,
-            previous: hasCurrentComparison && comparisonData?.previous ? { ...emptyEmotionCounts, ...comparisonData.previous } : null,
-            previousAvailable: hasCurrentComparison && Boolean(comparisonData?.previousAvailable),
-            previousAvailableByEmotion: hasCurrentComparison
-              ? {
-                  ...emptyEmotionCounts,
-                  ...(comparisonData?.previousAvailableByEmotion || {}),
-                }
-              : { ...emptyEmotionCounts },
-            maxValue: hasCurrentComparison ? Number(comparisonData?.maxValue) || 0 : 0,
-          });
+          setEmotionComparison(normalizeComparisonData(comparisonData));
           setEmotionalIntensity(Array.isArray(intensityData?.days) ? intensityData.days : emptyIntensityDays);
           setDashboardError('');
         }
@@ -1089,13 +1081,12 @@ const DashboardPage = () => {
 
     try {
       const token = await firebaseUser.getIdToken();
-      const [employeesData, trendData, distributionData, comparisonData, intensityData] = await Promise.all([
-        getEmployees(token),
-        getWeeklyEmotionTrend(token, selectedPeriod),
-        getEmotionDistribution(token, selectedPeriod).catch(() => emptyEmotionDistribution),
-        getEmotionComparison(token, selectedPeriod).catch(() => null),
-        getEmotionalIntensity(token, selectedPeriod).catch(() => null),
-      ]);
+      const dashboardData = await getDashboardData(token, selectedPeriod);
+      const employeesData = { employees: dashboardData.employees };
+      const trendData = dashboardData.weeklyTrend || { days: emptyTrendDays, maxValue: 0 };
+      const distributionData = dashboardData.distribution || emptyEmotionDistribution;
+      const comparisonData = dashboardData.comparison || null;
+      const intensityData = dashboardData.intensity || null;
       const latestEmployees = Array.isArray(employeesData.employees) ? employeesData.employees : [];
       const latestCompanyEmployees = latestEmployees.filter((employee) => {
         return isEmployee(employee) && isActiveEmployee(employee) && belongsToCurrentCompany(employee, userProfile);
@@ -1134,23 +1125,7 @@ const DashboardPage = () => {
           dominantEmotion: 'neutral',
         };
       })();
-      const latestCurrentComparison = {
-        ...emptyEmotionCounts,
-        ...(comparisonData?.current || {}),
-      };
-      const latestHasCurrentComparison = getCountsTotal(latestCurrentComparison) > 0;
-      const latestComparison = {
-        current: latestCurrentComparison,
-        previous: latestHasCurrentComparison && comparisonData?.previous ? { ...emptyEmotionCounts, ...comparisonData.previous } : null,
-        previousAvailable: latestHasCurrentComparison && Boolean(comparisonData?.previousAvailable),
-        previousAvailableByEmotion: latestHasCurrentComparison
-          ? {
-              ...emptyEmotionCounts,
-              ...(comparisonData?.previousAvailableByEmotion || {}),
-            }
-          : { ...emptyEmotionCounts },
-        maxValue: latestHasCurrentComparison ? Number(comparisonData?.maxValue) || 0 : 0,
-      };
+      const latestComparison = normalizeComparisonData(comparisonData);
       const latestIntensity = Array.isArray(intensityData?.days) ? intensityData.days : emptyIntensityDays;
 
       setEmployees(latestEmployees);
