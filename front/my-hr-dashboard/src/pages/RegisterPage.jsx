@@ -144,7 +144,6 @@ const RegisterPage = () => {
                   onInvalid={(event) => {
                     event.target.setCustomValidity('Select an existing company');
                   }}
-                  onFocus={() => refreshCompanies()}
                   disabled={companiesLoading || companySelectUnavailable}
                   required
                 >
