@@ -1765,7 +1765,7 @@ async function handleProcessImages(req, res) {
     if (!processed.length) {
       return res.json({
         status: failureStatus,
-        message: skipped[0]?.reason || failureMessage,
+        message: failureMessage,
         processed,
         skipped,
       });
