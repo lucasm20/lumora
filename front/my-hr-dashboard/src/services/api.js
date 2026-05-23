@@ -1,7 +1,7 @@
 import { signInWithCustomToken, signOut } from 'firebase/auth';
 import { auth, isFirebaseConfigured } from '../firebase';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '');
 const COMPANIES_CACHE_TTL_MS = 30 * 1000;
 
 let companiesCache = null;
@@ -85,6 +85,54 @@ async function request(path, options = {}) {
   return data;
 }
 
+function getCompanyName(item) {
+  if (!item || typeof item !== 'object') {
+    return '';
+  }
+
+  return String(item.companyName || item.name || item.company || '').trim();
+}
+
+function isActiveCompany(item) {
+  const status = String(item?.status || '').trim().toLowerCase();
+  return item?.active !== false && item?.disabled !== true && status !== 'inactive';
+}
+
+function normalizeCompaniesResponse(data) {
+  const rawCompanies = Array.isArray(data?.companies)
+    ? data.companies
+    : Array.isArray(data)
+      ? data
+      : [];
+  const companyNames = new Set();
+
+  const companies = rawCompanies.reduce((items, item, index) => {
+    const companyName = getCompanyName(item);
+
+    if (!companyName || !isActiveCompany(item)) {
+      return items;
+    }
+
+    const companyKey = companyName.toLowerCase();
+
+    if (companyNames.has(companyKey)) {
+      return items;
+    }
+
+    companyNames.add(companyKey);
+    items.push({
+      id: String(item.id || item.companyId || companyKey || index),
+      companyName,
+    });
+
+    return items;
+  }, []);
+
+  return companies.sort((left, right) =>
+    left.companyName.localeCompare(right.companyName, undefined, { sensitivity: 'base' })
+  );
+}
+
 export function getCompanies({ forceRefresh = false } = {}) {
   const cacheIsFresh = companiesCache && Date.now() - companiesCacheTime < COMPANIES_CACHE_TTL_MS;
 
@@ -102,13 +150,7 @@ export function getCompanies({ forceRefresh = false } = {}) {
     .then((data) => {
       companiesCache = {
         ...data,
-        companies: Array.isArray(data.companies)
-          ? [...data.companies].sort((left, right) =>
-              String(left.companyName || '').localeCompare(String(right.companyName || ''), undefined, {
-                sensitivity: 'base',
-              })
-            )
-          : [],
+        companies: normalizeCompaniesResponse(data),
       };
       companiesCacheTime = Date.now();
       return companiesCache;

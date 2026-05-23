@@ -12,6 +12,7 @@ export function useCompanies() {
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
     setLoading(true);
+    setError('');
 
     return getCompanies(options)
       .then((data) => {
@@ -19,7 +20,7 @@ export function useCompanies() {
           return;
         }
 
-        setCompanies(data.companies);
+        setCompanies(Array.isArray(data.companies) ? data.companies : []);
         setError('');
       })
       .catch((requestError) => {
@@ -27,7 +28,8 @@ export function useCompanies() {
           return;
         }
 
-        setError(requestError.message);
+        setCompanies([]);
+        setError(requestError.message || 'Could not load companies.');
       })
       .finally(() => {
         if (!isMountedRef.current || requestId !== requestIdRef.current) {

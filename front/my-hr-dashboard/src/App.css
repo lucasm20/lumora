@@ -219,6 +219,34 @@
   color: #166534;
 }
 
+.company-load-alert {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.company-load-alert button {
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+  padding: 6px 10px;
+  background: #ffffff;
+  color: #b91c1c;
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.form-helper {
+  margin-top: 8px;
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.form-helper.error {
+  color: #b91c1c;
+}
+
 .lumora-register {
   margin-top: 16px;
   font-size: 0.9rem;

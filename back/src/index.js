@@ -18,6 +18,7 @@ const ENV_CLIENT_ORIGINS = (process.env.CLIENT_ORIGIN || '')
   .map((origin) => origin.trim().replace(/\/$/, ''))
   .filter(Boolean);
 const CLIENT_ORIGINS = Array.from(new Set([...DEFAULT_CLIENT_ORIGINS, ...ENV_CLIENT_ORIGINS]));
+const LOCAL_DEV_ORIGIN_PATTERN = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/;
 
 function isOriginAllowed(origin) {
   if (!origin) {
@@ -27,6 +28,10 @@ function isOriginAllowed(origin) {
   const normalizedOrigin = origin.replace(/\/$/, '');
 
   if (normalizedOrigin.endsWith('.vercel.app')) {
+    return true;
+  }
+
+  if (LOCAL_DEV_ORIGIN_PATTERN.test(normalizedOrigin)) {
     return true;
   }
 
@@ -143,6 +148,35 @@ function normalizeValue(value = '') {
 
 function getCompanyId(companyName = '') {
   return normalizeValue(companyName);
+}
+
+function getCompanyNameFromData(data = {}, fallback = '') {
+  return String(data.companyName || data.name || data.company || fallback || '').trim();
+}
+
+function isActiveCompanyData(data = {}) {
+  const normalizedStatus = normalizeValue(data.status);
+  return data.active !== false && data.disabled !== true && normalizedStatus !== 'inactive';
+}
+
+function sanitizeCompany(doc) {
+  const data = doc.data() || {};
+  const companyName = getCompanyNameFromData(data, doc.id);
+
+  if (!companyName || !isActiveCompanyData(data)) {
+    return null;
+  }
+
+  return {
+    id: doc.id,
+    companyName,
+  };
+}
+
+function sortCompaniesByName(companies) {
+  return companies.sort((left, right) =>
+    left.companyName.localeCompare(right.companyName, undefined, { sensitivity: 'base' })
+  );
 }
 
 function normalizeEmotion(value = '') {
@@ -1176,15 +1210,10 @@ app.get('/api/companies', async (req, res) => {
 
     await ensureHrUserSeeded();
 
-    const snapshot = await db
-      .collection('companies')
-      .select('companyName')
-      .orderBy('companyName')
-      .get();
-    const companies = snapshot.docs.map((doc) => ({
-      id: doc.id,
-      companyName: doc.data().companyName,
-    }));
+    const snapshot = await db.collection('companies').get();
+    const companies = sortCompaniesByName(
+      snapshot.docs.map((doc) => sanitizeCompany(doc)).filter(Boolean)
+    );
 
     companiesCache = companies;
     companiesCacheExpiresAt = Date.now() + COMPANIES_CACHE_TTL_MS;
@@ -1302,6 +1331,8 @@ app.post('/api/auth/register', async (req, res) => {
 
         transaction.create(companyRef, {
           companyName: normalizedCompany,
+          active: true,
+          createdAt: new Date().toISOString(),
         });
       } else {
         if (!companyDoc.exists) {

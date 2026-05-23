@@ -11,6 +11,7 @@ async function seedHrUser(db) {
   await db.collection('companies').doc(HR_USER.companyId).set(
     {
       companyName: HR_USER.companyName,
+      active: true,
     },
     { merge: true }
   );

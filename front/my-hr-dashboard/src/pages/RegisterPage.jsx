@@ -70,6 +70,15 @@ const RegisterPage = () => {
   };
 
   const companySelectPending = role === 'employee' && companiesLoading;
+  const hasCompanies = companies.length > 0;
+  const companySelectUnavailable = role === 'employee' && !companiesLoading && (!hasCompanies || Boolean(companyLoadError));
+  const companyPlaceholder = companiesLoading
+    ? t('loadingCompanies', 'Loading companies...')
+    : companyLoadError
+      ? t('companiesLoadFailed', 'Could not load companies')
+      : hasCompanies
+        ? t('selectCompany', 'Select a registered company name')
+        : t('noCompaniesAvailable', 'No active companies available');
 
   return (
     <div className="login-page">
@@ -106,7 +115,14 @@ const RegisterPage = () => {
             </button>
           </div>
 
-          {companyLoadError && <div className="form-alert error">{companyLoadError}</div>}
+          {role === 'employee' && companyLoadError && (
+            <div className="form-alert error company-load-alert">
+              <span>{companyLoadError}</span>
+              <button type="button" onClick={refreshCompanies}>
+                {t('retry', 'Retry')}
+              </button>
+            </div>
+          )}
 
           <div className="form-group">
             <label htmlFor="register-company">
@@ -129,11 +145,11 @@ const RegisterPage = () => {
                     event.target.setCustomValidity('Select an existing company');
                   }}
                   onFocus={() => refreshCompanies()}
-                  disabled={companiesLoading}
+                  disabled={companiesLoading || companySelectUnavailable}
                   required
                 >
                   <option value="" disabled>
-                    {companiesLoading ? t('loadingCompanies', 'Loading companies...') : t('selectCompany', 'Select a registered company name')}
+                    {companyPlaceholder}
                   </option>
                   {companies.map((item) => (
                     <option key={item.id} value={item.companyName}>
@@ -152,6 +168,11 @@ const RegisterPage = () => {
                 />
               )}
             </div>
+            {role === 'employee' && !companiesLoading && !companyLoadError && !hasCompanies && (
+              <div className="form-helper error">
+                {t('noCompaniesAvailable', 'No active companies available')}
+              </div>
+            )}
           </div>
 
           <div className="form-group">
@@ -210,7 +231,7 @@ const RegisterPage = () => {
 
           {error && <div className="form-alert error">{error}</div>}
 
-          <button className="signin-button" type="submit" disabled={loading || companySelectPending}>
+          <button className="signin-button" type="submit" disabled={loading || companySelectPending || companySelectUnavailable}>
             {loading ? t('creating', 'Creating...') : t('register', 'Register')}
             <svg viewBox="0 0 24 24" fill="none" strokeWidth="1.8" aria-hidden="true">
               <path d="M5 12h14" stroke="currentColor" strokeLinecap="round" />
