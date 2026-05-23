@@ -343,7 +343,6 @@ function createWeeklyTrend(events) {
     map[label] = createEmptyEmotionCounts();
     return map;
   }, {});
-  const latestEventByEmployeeDay = new Map();
 
   events.forEach((event) => {
     const capturedAt = getRecordDate(event.capturedAt || event.createdAt);
@@ -359,20 +358,7 @@ function createWeeklyTrend(events) {
       return;
     }
 
-    const eventKey = `${dayLabel}:${event.employeeId}`;
-    const existing = latestEventByEmployeeDay.get(eventKey);
-
-    if (!existing || capturedAt > existing.capturedAt) {
-      latestEventByEmployeeDay.set(eventKey, {
-        capturedAt,
-        dayLabel,
-        emotion,
-      });
-    }
-  });
-
-  latestEventByEmployeeDay.forEach((event) => {
-    dayMap[event.dayLabel][event.emotion] += 1;
+    dayMap[dayLabel][emotion] += 1;
   });
 
   const days = WEEKDAY_ORDER.map((label) => ({
@@ -417,7 +403,7 @@ function getRecordDate(value) {
 function createEmotionDistribution(employeeDocs, emotionEvents, includeEmployeeFallback = true) {
   const counts = createEmptyEmotionCounts();
   const employeeDataById = new Map();
-  const latestByEmployee = new Map();
+  const employeeIdsWithEvents = new Set();
 
   employeeDocs.forEach((doc) => {
     employeeDataById.set(doc.id, doc.data());
@@ -435,19 +421,13 @@ function createEmotionDistribution(employeeDocs, emotionEvents, includeEmployeeF
       return;
     }
 
-    const existing = latestByEmployee.get(event.employeeId);
-
-    if (!existing || capturedAt > existing.capturedAt) {
-      latestByEmployee.set(event.employeeId, {
-        emotion,
-        capturedAt,
-      });
-    }
+    counts[emotion] += 1;
+    employeeIdsWithEvents.add(event.employeeId);
   });
 
   if (includeEmployeeFallback) {
     employeeDataById.forEach((employeeData, employeeId) => {
-      if (latestByEmployee.has(employeeId)) {
+      if (employeeIdsWithEvents.has(employeeId)) {
         return;
       }
 
@@ -461,17 +441,10 @@ function createEmotionDistribution(employeeDocs, emotionEvents, includeEmployeeF
       );
 
       if (emotion) {
-        latestByEmployee.set(employeeId, {
-          emotion,
-          capturedAt: capturedAt || new Date(0),
-        });
+        counts[emotion] += 1;
       }
     });
   }
-
-  latestByEmployee.forEach(({ emotion }) => {
-    counts[emotion] += 1;
-  });
 
   const total = Object.values(counts).reduce((sum, value) => sum + value, 0);
   const percentages = EMOTION_LABELS.reduce((nextPercentages, emotion) => {
@@ -487,14 +460,20 @@ function createEmotionDistribution(employeeDocs, emotionEvents, includeEmployeeF
 }
 
 function createCurrentVsPreviousComparison(employeeDocs, emotionEvents, options = {}) {
-  const targetDate = options.targetDate || new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const now = new Date();
   const currentStart = options.currentStart || null;
-  const currentEnd = options.currentEnd || null;
+  const currentEnd = options.currentEnd || now;
+  const targetDate = options.targetDate || new Date(currentEnd.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const previousEnd = currentStart || targetDate;
+  const previousStart =
+    options.previousStart ||
+    (currentStart
+      ? new Date(currentStart.getTime() - (currentEnd.getTime() - currentStart.getTime()))
+      : null);
   const current = createEmptyEmotionCounts();
   let previous = createEmptyEmotionCounts();
   const previousAvailableByEmotion = createEmptyEmotionCounts();
   const employeeIds = new Set(employeeDocs.map((doc) => doc.id));
-  const eventsByEmployee = new Map();
 
   emotionEvents.forEach((event) => {
     if (!employeeIds.has(event.employeeId)) {
@@ -508,41 +487,21 @@ function createCurrentVsPreviousComparison(employeeDocs, emotionEvents, options 
       return;
     }
 
-    const existing = eventsByEmployee.get(event.employeeId) || [];
-    existing.push({
-      emotion,
-      capturedAt,
-    });
-    eventsByEmployee.set(event.employeeId, existing);
-  });
-
-  employeeDocs.forEach((doc) => {
-    const employeeEvents = eventsByEmployee
-      .get(doc.id)
-      ?.sort((left, right) => left.capturedAt - right.capturedAt) || [];
-
-    if (!employeeEvents.length) {
-      return;
+    if (
+      (!currentStart || capturedAt >= currentStart) &&
+      (!currentEnd || capturedAt <= currentEnd)
+    ) {
+      current[emotion] += 1;
     }
 
-    const currentEvents = employeeEvents.filter((event) => {
-      return (
-        (!currentStart || event.capturedAt >= currentStart) &&
-        (!currentEnd || event.capturedAt <= currentEnd)
-      );
-    });
-
-    if (currentEvents.length) {
-      const latest = currentEvents[currentEvents.length - 1];
-      current[latest.emotion] += 1;
-    }
-
-    const historicalEvents = employeeEvents.filter((event) => event.capturedAt <= targetDate);
-
-    if (historicalEvents.length) {
-      const historical = historicalEvents[historicalEvents.length - 1];
-      previous[historical.emotion] += 1;
-      previousAvailableByEmotion[historical.emotion] = 1;
+    if (
+      previousStart &&
+      previousEnd &&
+      capturedAt >= previousStart &&
+      capturedAt < previousEnd
+    ) {
+      previous[emotion] += 1;
+      previousAvailableByEmotion[emotion] = 1;
     }
   });
 
@@ -569,7 +528,7 @@ function createCurrentVsPreviousComparison(employeeDocs, emotionEvents, options 
       return map;
     }, {}),
     maxValue,
-    targetAt: targetDate.toISOString(),
+    targetAt: previousEnd.toISOString(),
   };
 }
 
@@ -577,7 +536,13 @@ function createEmotionalIntensityTrend(employeeDocs, emotionEvents, period = 'we
   const startIso = getPeriodStart(period).toISOString();
   const nowIso = new Date().toISOString();
   const employeeIds = new Set(employeeDocs.map((doc) => doc.id));
-  const latestByEmployeeDay = new Map();
+  const dayTotals = WEEKDAY_ORDER.reduce((map, label) => {
+    map[label] = {
+      total: 0,
+      intense: 0,
+    };
+    return map;
+  }, {});
 
   emotionEvents.forEach((event) => {
     if (!employeeIds.has(event.employeeId)) {
@@ -598,31 +563,10 @@ function createEmotionalIntensityTrend(employeeDocs, emotionEvents, period = 'we
       return;
     }
 
-    const eventKey = `${dayLabel}:${event.employeeId}`;
-    const existing = latestByEmployeeDay.get(eventKey);
+    dayTotals[dayLabel].total += 1;
 
-    if (!existing || capturedAt > existing.capturedAt) {
-      latestByEmployeeDay.set(eventKey, {
-        capturedAt,
-        dayLabel,
-        emotion,
-      });
-    }
-  });
-
-  const dayTotals = WEEKDAY_ORDER.reduce((map, label) => {
-    map[label] = {
-      total: 0,
-      intense: 0,
-    };
-    return map;
-  }, {});
-
-  latestByEmployeeDay.forEach((event) => {
-    dayTotals[event.dayLabel].total += 1;
-
-    if (INTENSITY_EMOTIONS.has(event.emotion)) {
-      dayTotals[event.dayLabel].intense += 1;
+    if (INTENSITY_EMOTIONS.has(emotion)) {
+      dayTotals[dayLabel].intense += 1;
     }
   });
 
@@ -1056,14 +1000,20 @@ async function saveEmotionResult(employeeId, emotionData) {
     { merge: true }
   );
 
-  await db.collection('emotionEvents').add({
+  const eventRef = await db.collection('emotionEvents').add({
     employeeId,
     companyName: emotionData.companyName || null,
     emotion: emotionData.emotion,
     confidence: emotionData.confidence || null,
+    raw: emotionData.raw || null,
     capturedAt: timestamp,
     createdAt: new Date().toISOString(),
   });
+
+  return {
+    eventId: eventRef.id,
+    capturedAt: timestamp,
+  };
 }
 
 async function processEmotionForEmployee(employeeDoc, imageValue, captureHints = null) {
@@ -1093,10 +1043,11 @@ async function processEmotionForEmployee(employeeDoc, imageValue, captureHints =
     capturedAt: timestamp,
   };
 
-  await saveEmotionResult(employeeDoc.id, emotionData);
+  const savedEvent = await saveEmotionResult(employeeDoc.id, emotionData);
 
   return {
     employeeId: employeeDoc.id,
+    eventId: savedEvent.eventId,
     emotion: dominantEmotion,
     confidence: emotionData.confidence,
     capturedAt: timestamp,

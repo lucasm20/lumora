@@ -657,6 +657,11 @@ const InsightsPage = () => {
           detail: { source: 'process-images', processed: results.length },
         })
       );
+      window.dispatchEvent(
+        new CustomEvent('emotion:update', {
+          detail: { source: 'process-images', processed: results },
+        })
+      );
 
       setProcessSummary(response.message || `${results.length} employees were processed`);
     } catch (requestError) {
