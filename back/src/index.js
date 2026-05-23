@@ -1692,7 +1692,7 @@ async function handleProcessImages(req, res) {
         if (!frameData?.imageBase64 || frameData.requestId !== requestId) {
           skipped.push({
             employeeId: employeeDoc.id,
-            reason: 'No camera snapshot received from employee.',
+            reason: LIVE_VIBE_NO_EMPLOYEE_FOUND_MESSAGE,
           });
           continue;
         }
@@ -1765,7 +1765,7 @@ async function handleProcessImages(req, res) {
     if (!processed.length) {
       return res.json({
         status: failureStatus,
-        message: failureMessage,
+        message: LIVE_VIBE_NO_EMPLOYEE_FOUND_MESSAGE,
         processed,
         skipped,
       });
