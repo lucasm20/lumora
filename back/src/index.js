@@ -1045,13 +1045,17 @@ async function saveEmotionResult(employeeId, emotionData) {
 
 async function saveLiveVibeNotFound(employeeId, fields = {}) {
   const timestamp = fields.capturedAt || new Date().toISOString();
+  const update = {
+    liveVibe: LIVE_VIBE_NOT_FOUND,
+    liveVibeAt: timestamp,
+  };
+
+  if (fields.frameCapturedAt) {
+    update.latestCameraFrameAt = fields.frameCapturedAt;
+  }
 
   await db.collection('users').doc(employeeId).set(
-    {
-      liveVibe: LIVE_VIBE_NOT_FOUND,
-      liveVibeAt: timestamp,
-      latestCameraFrameAt: fields.frameCapturedAt || timestamp,
-    },
+    update,
     { merge: true }
   );
 
@@ -1060,7 +1064,7 @@ async function saveLiveVibeNotFound(employeeId, fields = {}) {
     liveVibe: LIVE_VIBE_NOT_FOUND,
     message: LIVE_VIBE_NOT_FOUND_MESSAGE,
     capturedAt: timestamp,
-    frameCapturedAt: fields.frameCapturedAt || timestamp,
+    frameCapturedAt: fields.frameCapturedAt || null,
   };
 }
 
@@ -1721,8 +1725,10 @@ async function handleProcessImages(req, res) {
       }
     }
 
+    const processedEmployeeIds = new Set(processed.map((result) => result.employeeId));
+    const skippedEmployeeIds = new Set(skipped.map((item) => item.employeeId));
     const unprocessedEmployeeDocs = connectedEmployeeDocs.filter((employeeDoc) => {
-      return !processed.some((result) => result.employeeId === employeeDoc.id);
+      return !processedEmployeeIds.has(employeeDoc.id);
     });
     const failureMessage = skipped[0]?.reason || LIVE_VIBE_NO_EMPLOYEE_FOUND_MESSAGE;
     const failureStatus = skipped.length ? 'processing_failed' : 'no_employee_found';
@@ -1737,6 +1743,18 @@ async function handleProcessImages(req, res) {
         }
       );
     }
+
+    employeeDocs.forEach((employeeDoc) => {
+      if (processedEmployeeIds.has(employeeDoc.id) || skippedEmployeeIds.has(employeeDoc.id)) {
+        return;
+      }
+
+      skipped.push({
+        employeeId: employeeDoc.id,
+        reason: LIVE_VIBE_NO_EMPLOYEE_FOUND_MESSAGE,
+      });
+      skippedEmployeeIds.add(employeeDoc.id);
+    });
 
     if (skipped.length) {
       const notFoundByEmployee = new Map(

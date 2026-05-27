@@ -89,22 +89,73 @@ function getLiveVibeLabel(t, liveVibe, fallback = 'Pending') {
   return t(`emotion.${liveVibe}`, liveVibe || fallback);
 }
 
-function getEmployeeSyncDate(employee) {
-  const timestamp =
-    employee?.latestCameraFrameAt ||
-    employee?.lastEmotionAt ||
-    employee?.liveVibeAt ||
-    employee?.emotionAt ||
-    employee?.cameraUpdatedAt ||
-    employee?.updatedAt ||
-    employee?.createdAt;
+function hasEmployeeCameraFrame(employee) {
+  return Boolean(employee?.latestCameraFrameAt);
+}
 
-  if (!timestamp) {
+function isEmployeeDetected(employee) {
+  const liveVibe = getEmployeeLiveVibe(employee);
+  return allowedEmotionKeys.has(liveVibe);
+}
+
+function isEmployeeCameraActive(employee) {
+  return Boolean(employee?.cameraOn && hasEmployeeCameraFrame(employee) && isEmployeeDetected(employee));
+}
+
+function mergeProcessResultsIntoEmployees(employees, results = [], skipped = []) {
+  const resultsByEmployee = new Map(results.map((item) => [String(item.employeeId), item]));
+  const skippedByEmployee = new Map(skipped.map((item) => [String(item.employeeId), item]));
+
+  return employees.map((employee) => {
+    const employeeId = String(employee.id);
+    const update = resultsByEmployee.get(employeeId);
+    const skip = skippedByEmployee.get(employeeId);
+
+    if (!update && !skip) {
+      return employee;
+    }
+
+    const frameCapturedAt = update?.frameCapturedAt || skip?.frameCapturedAt || null;
+
+    return {
+      ...employee,
+      cameraOn: Boolean(update && frameCapturedAt),
+      lastEmotion: update?.emotion || employee.lastEmotion,
+      lastEmotionAt: update?.capturedAt || employee.lastEmotionAt,
+      liveVibe: update?.emotion || skip?.liveVibe || employee.liveVibe,
+      liveVibeAt: update?.capturedAt || skip?.capturedAt || employee.liveVibeAt,
+      emotion: update?.emotion || employee.emotion,
+      emotionAt: update?.capturedAt || employee.emotionAt,
+      latestCameraFrameAt: frameCapturedAt || employee.latestCameraFrameAt,
+    };
+  });
+}
+
+function getEmployeeSyncDate(employee) {
+  const timestamps = [
+    employee?.latestCameraFrameAt,
+    employee?.lastEmotionAt,
+    employee?.liveVibeAt,
+    employee?.emotionAt,
+    employee?.cameraUpdatedAt,
+    employee?.updatedAt,
+    employee?.createdAt,
+  ]
+    .map((timestamp) => {
+      if (!timestamp) {
+        return null;
+      }
+
+      const date = new Date(timestamp);
+      return Number.isNaN(date.getTime()) ? null : date;
+    })
+    .filter(Boolean);
+
+  if (!timestamps.length) {
     return null;
   }
 
-  const date = new Date(timestamp);
-  return Number.isNaN(date.getTime()) ? null : date;
+  return new Date(Math.max(...timestamps.map((date) => date.getTime())));
 }
 
 function getPeriodStart(period, now = new Date()) {
@@ -631,42 +682,18 @@ const InsightsPage = () => {
       const response = await processActiveEmployeeEmotions(token);
       const results = response.processed || [];
       const skipped = response.skipped || [];
+      const hasProcessUpdates = results.length || skipped.length;
 
-      if (response.status === 'no_employee_found' && !skipped.length) {
+      if (!hasProcessUpdates) {
         setProcessSummary(response.message || NO_EMPLOYEE_FOUND_MESSAGE);
         return;
       }
 
-      if (!results.length && !skipped.length) {
-        setProcessSummary(response.message || NO_EMPLOYEE_FOUND_MESSAGE);
-        return;
-      }
-
-      setEmployees((prev) =>
-        prev.map((employee) => {
-          const update = results.find((item) => item.employeeId === employee.id);
-          const skip = skipped.find((item) => item.employeeId === employee.id);
-
-          if (!update && !skip?.capturedAt) {
-            return employee;
-          }
-
-          return {
-            ...employee,
-            lastEmotion: update?.emotion || employee.lastEmotion,
-            lastEmotionAt: update?.capturedAt || employee.lastEmotionAt,
-            liveVibe: update?.emotion || skip?.liveVibe || employee.liveVibe,
-            liveVibeAt: update?.capturedAt || skip?.capturedAt || employee.liveVibeAt,
-            emotion: update?.emotion || employee.emotion,
-            emotionAt: update?.capturedAt || employee.emotionAt,
-            latestCameraFrameAt: update?.frameCapturedAt || skip?.frameCapturedAt || skip?.capturedAt || employee.latestCameraFrameAt,
-          };
-        })
-      );
+      setEmployees((prev) => mergeProcessResultsIntoEmployees(prev, results, skipped));
 
       const refreshed = await getEmployees(token);
       const nextEmployees = Array.isArray(refreshed.employees) ? refreshed.employees : [];
-      setEmployees(nextEmployees);
+      setEmployees(mergeProcessResultsIntoEmployees(nextEmployees, results, skipped));
 
       window.dispatchEvent(
         new CustomEvent('employees:update', {
@@ -1070,7 +1097,7 @@ const InsightsPage = () => {
                     return getLiveVibeLabel(t, liveVibe, t('pending', 'Pending'));
                   })()}
                 </span>
-                <span className="insights-tag">{employee.cameraOn ? t('on', 'On') : t('off', 'Off')}</span>
+                <span className="insights-tag">{isEmployeeCameraActive(employee) ? t('on', 'On') : t('off', 'Off')}</span>
                 <span className="insights-sync">{formatEmployeeSyncDate(employee)}</span>
               </button>
             ))}
