@@ -314,6 +314,26 @@ function sanitizeEmployee(doc) {
   return safeUser;
 }
 
+function getEmployeeActivityDate(data = {}) {
+  const timestamps = [
+    data.latestCameraFrameAt,
+    data.lastEmotionAt,
+    data.liveVibeAt,
+    data.emotionAt,
+    data.cameraUpdatedAt,
+    data.updatedAt,
+    data.createdAt,
+  ]
+    .map(getRecordDate)
+    .filter(Boolean);
+
+  if (!timestamps.length) {
+    return null;
+  }
+
+  return timestamps.reduce((latest, date) => (!latest || date > latest ? date : latest), null);
+}
+
 function createEmptyEmotionCounts() {
   return EMOTION_LABELS.reduce((counts, emotion) => {
     counts[emotion] = 0;
@@ -321,37 +341,80 @@ function createEmptyEmotionCounts() {
   }, {});
 }
 
-function getPeriodStart(period, now = new Date()) {
+function getSelectedMonthParts(period) {
+  const match = String(period || '').trim().toLowerCase().match(/^month:(\d{4})-(\d{2})$/);
+
+  if (!match) {
+    return null;
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+
+  if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
+    return null;
+  }
+
+  return { year, month };
+}
+
+function getPeriodRange(period, now = new Date()) {
   const normalizedPeriod = normalizeValue(period);
+  const selectedMonth = getSelectedMonthParts(period);
 
   if (normalizedPeriod === '1h') {
     const start = new Date(now);
     start.setHours(start.getHours() - 1);
-    return start;
+    return {
+      start,
+      end: now,
+    };
   }
 
   const { year, month, day } = getTimeZoneDateParts(now);
 
   if (normalizedPeriod === 'today') {
-    return getTimeZoneStartOfDay(year, month, day);
+    return {
+      start: getTimeZoneStartOfDay(year, month, day),
+      end: now,
+    };
+  }
+
+  if (selectedMonth) {
+    const start = getTimeZoneStartOfDay(selectedMonth.year, selectedMonth.month, 1);
+    const end = getTimeZoneStartOfDay(selectedMonth.year, selectedMonth.month + 1, 1);
+
+    return {
+      start,
+      end: now >= start && now < end ? now : end,
+    };
   }
 
   if (normalizedPeriod === 'month') {
-    return getTimeZoneStartOfDay(year, month, 1);
+    return {
+      start: getTimeZoneStartOfDay(year, month, 1),
+      end: now,
+    };
   }
 
   const weekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
   const daysSinceMonday = weekday === 0 ? 6 : weekday - 1;
-  return getTimeZoneStartOfDay(year, month, day - daysSinceMonday);
+  return {
+    start: getTimeZoneStartOfDay(year, month, day - daysSinceMonday),
+    end: now,
+  };
+}
+
+function getPeriodStart(period, now = new Date()) {
+  return getPeriodRange(period, now).start;
 }
 
 function filterEventsByPeriod(events, period) {
-  const startDate = getPeriodStart(period);
-  const now = new Date();
+  const { start, end } = getPeriodRange(period);
 
   return events.filter((event) => {
     const capturedAt = getRecordDate(event.capturedAt || event.createdAt);
-    return capturedAt && capturedAt >= startDate && capturedAt <= now;
+    return capturedAt && capturedAt >= start && capturedAt < end;
   });
 }
 
@@ -506,7 +569,7 @@ function createCurrentVsPreviousComparison(employeeDocs, emotionEvents, options 
 
     if (
       (!currentStart || capturedAt >= currentStart) &&
-      (!currentEnd || capturedAt <= currentEnd)
+      (!currentEnd || capturedAt < currentEnd)
     ) {
       current[emotion] += 1;
     }
@@ -550,8 +613,7 @@ function createCurrentVsPreviousComparison(employeeDocs, emotionEvents, options 
 }
 
 function createEmotionalIntensityTrend(employeeDocs, emotionEvents, period = 'week') {
-  const startIso = getPeriodStart(period).toISOString();
-  const nowIso = new Date().toISOString();
+  const { start, end } = getPeriodRange(period);
   const employeeIds = new Set(employeeDocs.map((doc) => doc.id));
   const dayTotals = WEEKDAY_ORDER.reduce((map, label) => {
     map[label] = {
@@ -569,14 +631,13 @@ function createEmotionalIntensityTrend(employeeDocs, emotionEvents, period = 'we
     const emotion = getRecordEmotion(event);
     const capturedAt = getRecordDate(event.capturedAt || event.createdAt);
 
-    if (!emotion || !capturedAt) {
+    if (!emotion || !capturedAt || capturedAt < start || capturedAt >= end) {
       return;
     }
 
-    const capturedIso = capturedAt.toISOString();
     const dayLabel = getTimeZoneWeekdayLabel(capturedAt);
 
-    if (capturedIso < startIso || capturedIso > nowIso || !WEEKDAY_ORDER.includes(dayLabel)) {
+    if (!WEEKDAY_ORDER.includes(dayLabel)) {
       return;
     }
 
@@ -612,7 +673,7 @@ function createEmotionalIntensityTrend(employeeDocs, emotionEvents, period = 'we
 
   return {
     days: withTrend,
-    range: { start: startIso, end: nowIso, period },
+    range: { start: start.toISOString(), end: end.toISOString(), period },
   };
 }
 
@@ -1818,17 +1879,98 @@ app.get('/api/employees', authenticateRequest, async (req, res) => {
   }
 
   try {
+    const period = req.query.period || '';
     const snapshot = await db
       .collection('users')
       .where('companyName', '==', req.userProfile.companyName)
       .get();
 
-    const employees = snapshot.docs
-      .map(sanitizeEmployee)
-      .filter((user) => user.role === 'employee')
+    const employeeDocs = snapshot.docs.filter((doc) => {
+      return normalizeValue(doc.data().role) === 'employee';
+    });
+
+    if (!period) {
+      const employees = employeeDocs
+        .map(sanitizeEmployee)
+        .sort((left, right) => left.username.localeCompare(right.username));
+
+      return res.json({ employees });
+    }
+
+    const employeeIds = new Set(employeeDocs.map((doc) => doc.id));
+    const eventsSnapshot = await db
+      .collection('emotionEvents')
+      .where('companyName', '==', req.userProfile.companyName)
+      .get();
+    const periodEvents = filterEventsByPeriod(
+      eventsSnapshot.docs
+        .map((doc) => ({ id: doc.id, ...doc.data() }))
+        .filter((event) => employeeIds.has(event.employeeId)),
+      period
+    );
+    const eventSummaryByEmployee = new Map();
+
+    periodEvents.forEach((event) => {
+      const capturedAt = getRecordDate(event.capturedAt || event.createdAt);
+
+      if (!capturedAt) {
+        return;
+      }
+
+      const current = eventSummaryByEmployee.get(event.employeeId);
+
+      if (!current || capturedAt > current.capturedAt) {
+        eventSummaryByEmployee.set(event.employeeId, {
+          capturedAt,
+          event,
+          count: (current?.count || 0) + 1,
+        });
+        return;
+      }
+
+      current.count += 1;
+    });
+
+    const { start, end } = getPeriodRange(period);
+    const employees = employeeDocs
+      .filter((doc) => {
+        if (eventSummaryByEmployee.has(doc.id)) {
+          return true;
+        }
+
+        const activityDate = getEmployeeActivityDate(doc.data());
+        return activityDate && activityDate >= start && activityDate < end;
+      })
+      .map((doc) => {
+        const employee = sanitizeEmployee(doc);
+        const periodSummary = eventSummaryByEmployee.get(doc.id);
+
+        if (!periodSummary) {
+          return {
+            ...employee,
+            periodEventsCount: 0,
+            period,
+          };
+        }
+
+        return {
+          ...employee,
+          periodEventsCount: periodSummary.count,
+          periodLastEmotion: periodSummary.event.emotion || null,
+          periodLastEmotionAt: periodSummary.capturedAt.toISOString(),
+          period,
+        };
+      })
       .sort((left, right) => left.username.localeCompare(right.username));
 
-    return res.json({ employees });
+    return res.json({
+      employees,
+      range: {
+        start: start.toISOString(),
+        end: end.toISOString(),
+        period,
+      },
+    });
   } catch (error) {
     const response = getServiceErrorResponse(error, 'Could not load employees.');
     return res.status(response.status).json({ message: response.message });
@@ -1848,8 +1990,7 @@ async function getDashboardPayload(req) {
     };
   }
 
-  const startDate = getPeriodStart(period);
-  const now = new Date();
+  const { start, end } = getPeriodRange(period);
   const [employeesSnapshot, eventsSnapshot] = await Promise.all([
     db.collection('users').where('companyName', '==', companyName).get(),
     db.collection('emotionEvents').where('companyName', '==', companyName).get(),
@@ -1870,13 +2011,13 @@ async function getDashboardPayload(req) {
     weeklyTrend: createWeeklyTrend(filteredEvents),
     distribution: createEmotionDistribution(employeeDocs, filteredEvents, false),
     comparison: createCurrentVsPreviousComparison(employeeDocs, events, {
-      currentStart: startDate,
-      currentEnd: now,
+      currentStart: start,
+      currentEnd: end,
     }),
     intensity: createEmotionalIntensityTrend(employeeDocs, events, period),
     range: {
-      start: startDate.toISOString(),
-      end: now.toISOString(),
+      start: start.toISOString(),
+      end: end.toISOString(),
       period,
     },
     cached: false,
@@ -1936,19 +2077,23 @@ app.get('/api/employees/:employeeId/emotions/summary', authenticateRequest, asyn
     const events = eventsSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
     const period = req.query.period || 'week';
     const periodEvents = filterEventsByPeriod(events, period);
-    const startDate = getPeriodStart(period);
-    const now = new Date();
+    const { start, end } = getPeriodRange(period);
 
     return res.json({
       employee: sanitizeEmployee(employeeDoc),
       distribution: createEmotionDistribution([employeeDoc], periodEvents, false),
       weeklyTrend: createWeeklyTrend(periodEvents),
       comparison: createCurrentVsPreviousComparison([employeeDoc], events, {
-        currentStart: startDate,
-        currentEnd: now,
+        currentStart: start,
+        currentEnd: end,
       }),
       intensity: createEmotionalIntensityTrend([employeeDoc], events, period),
       eventsCount: events.length,
+      range: {
+        start: start.toISOString(),
+        end: end.toISOString(),
+        period,
+      },
     });
   } catch (error) {
     console.error('Employee emotion summary lookup failed:', {
@@ -1986,12 +2131,13 @@ app.get('/api/emotions/distribution', authenticateRequest, async (req, res) => {
 
     const events = eventsSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
     const filteredEvents = filterEventsByPeriod(events, period);
+    const { start, end } = getPeriodRange(period);
 
     return res.json({
       ...createEmotionDistribution(employeeDocs, filteredEvents, false),
       range: {
-        start: getPeriodStart(period).toISOString(),
-        end: new Date().toISOString(),
+        start: start.toISOString(),
+        end: end.toISOString(),
         period,
       },
     });
@@ -2012,8 +2158,7 @@ app.get('/api/emotions/current-vs-previous', authenticateRequest, async (req, re
 
   try {
     const period = req.query.period || 'week';
-    const startDate = getPeriodStart(period);
-    const now = new Date();
+    const { start, end } = getPeriodRange(period);
     const employeesSnapshot = await db
       .collection('users')
       .where('companyName', '==', req.userProfile.companyName)
@@ -2036,12 +2181,12 @@ app.get('/api/emotions/current-vs-previous', authenticateRequest, async (req, re
 
     return res.json({
       ...createCurrentVsPreviousComparison(employeeDocs, events, {
-        currentStart: startDate,
-        currentEnd: now,
+        currentStart: start,
+        currentEnd: end,
       }),
       range: {
-        start: startDate.toISOString(),
-        end: now.toISOString(),
+        start: start.toISOString(),
+        end: end.toISOString(),
         period,
       },
     });
@@ -2100,9 +2245,9 @@ app.get('/api/emotions/weekly-trend', authenticateRequest, async (req, res) => {
 
   try {
     const period = req.query.period || 'week';
-    const startDate = getPeriodStart(period);
-    const startIso = startDate.toISOString();
-    const nowIso = new Date().toISOString();
+    const { start, end } = getPeriodRange(period);
+    const startIso = start.toISOString();
+    const endIso = end.toISOString();
 
     const employeesSnapshot = await db
       .collection('users')
@@ -2118,7 +2263,7 @@ app.get('/api/emotions/weekly-trend', authenticateRequest, async (req, res) => {
     if (!employeeIds.size) {
       return res.json({
         ...createWeeklyTrend([]),
-        range: { start: startIso, end: nowIso, period },
+        range: { start: startIso, end: endIso, period },
       });
     }
 
@@ -2134,7 +2279,7 @@ app.get('/api/emotions/weekly-trend', authenticateRequest, async (req, res) => {
 
     return res.json({
       ...createWeeklyTrend(filteredEvents),
-      range: { start: startIso, end: nowIso, period },
+      range: { start: startIso, end: endIso, period },
     });
   } catch (error) {
     console.error('Weekly emotion trend lookup failed:', {

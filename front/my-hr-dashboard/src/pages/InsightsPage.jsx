@@ -32,6 +32,20 @@ const emptyCounts = emotionItems.reduce((counts, item) => {
   return counts;
 }, {});
 const weekdayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const monthLabels = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+];
 const emptyTrendDays = weekdayLabels.map((label) => ({ label, counts: { ...emptyCounts } }));
 const emptyIntensityDays = weekdayLabels.map((label) => ({
   label,
@@ -39,6 +53,27 @@ const emptyIntensityDays = weekdayLabels.map((label) => ({
   trend: 0,
 }));
 const NO_EMPLOYEE_FOUND_MESSAGE = 'No employee found';
+
+function getMonthValue(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  return `${year}-${month}`;
+}
+
+function getMonthPeriod(monthValue) {
+  return `month:${monthValue}`;
+}
+
+function isSelectedMonthPeriod(period) {
+  return String(period || '').toLowerCase().startsWith('month:');
+}
+
+function getMonthOptions(year = new Date().getFullYear()) {
+  return monthLabels.map((label, index) => ({
+    label,
+    value: `${year}-${String(index + 1).padStart(2, '0')}`,
+  }));
+}
 
 function formatPercent(value) {
   const number = Number.isFinite(Number(value)) ? Number(value) : 0;
@@ -67,6 +102,7 @@ function normalizeMetricPercent(value) {
 
 function getEmployeeLiveVibe(employee) {
   const value =
+    employee?.periodLastEmotion ||
     employee?.liveVibe ||
     employee?.lastEmotion ||
     employee?.emotion ||
@@ -133,6 +169,7 @@ function mergeProcessResultsIntoEmployees(employees, results = [], skipped = [])
 
 function getEmployeeSyncDate(employee) {
   const timestamps = [
+    employee?.periodLastEmotionAt,
     employee?.latestCameraFrameAt,
     employee?.lastEmotionAt,
     employee?.liveVibeAt,
@@ -158,31 +195,47 @@ function getEmployeeSyncDate(employee) {
   return new Date(Math.max(...timestamps.map((date) => date.getTime())));
 }
 
-function getPeriodStart(period, now = new Date()) {
-  const start = new Date(now);
+function getPeriodRange(period, now = new Date()) {
   const normalizedPeriod = String(period || '').toLowerCase();
+  const selectedMonth = normalizedPeriod.match(/^month:(\d{4})-(\d{2})$/);
 
   if (normalizedPeriod === '1h') {
+    const start = new Date(now);
     start.setHours(start.getHours() - 1);
-    return start;
+    return { start, end: now };
   }
 
   if (normalizedPeriod === 'today') {
+    const start = new Date(now);
     start.setHours(0, 0, 0, 0);
-    return start;
+    return { start, end: now };
+  }
+
+  if (selectedMonth) {
+    const year = Number(selectedMonth[1]);
+    const monthIndex = Number(selectedMonth[2]) - 1;
+    const start = new Date(year, monthIndex, 1);
+    const monthEnd = new Date(year, monthIndex + 1, 1);
+
+    return {
+      start,
+      end: now >= start && now < monthEnd ? now : monthEnd,
+    };
   }
 
   if (normalizedPeriod === 'month') {
+    const start = new Date(now);
     start.setDate(1);
     start.setHours(0, 0, 0, 0);
-    return start;
+    return { start, end: now };
   }
 
+  const start = new Date(now);
   const day = start.getDay();
   const daysSinceMonday = day === 0 ? 6 : day - 1;
   start.setDate(start.getDate() - daysSinceMonday);
   start.setHours(0, 0, 0, 0);
-  return start;
+  return { start, end: now };
 }
 
 function isEmployeeInPeriod(employee, period) {
@@ -193,7 +246,8 @@ function isEmployeeInPeriod(employee, period) {
   }
 
   const now = new Date();
-  return syncDate >= getPeriodStart(period, now) && syncDate <= now;
+  const { start, end } = getPeriodRange(period, now);
+  return syncDate >= start && syncDate < end;
 }
 
 function formatEmployeeSyncDate(employee) {
@@ -589,6 +643,7 @@ const InsightsPage = () => {
   const { language, t, toggleLanguage } = useLanguage();
   const navigate = useNavigate();
   const [period, setPeriod] = useState('Week');
+  const [selectedMonth, setSelectedMonth] = useState(() => getMonthValue());
   const [query, setQuery] = useState('');
   const [employees, setEmployees] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -627,9 +682,14 @@ const InsightsPage = () => {
         return;
       }
 
+      if (isMounted) {
+        setLoading(true);
+        setError('');
+      }
+
       try {
         const token = await firebaseUser.getIdToken();
-        const data = await getEmployees(token);
+        const data = await getEmployees(token, period);
 
         if (isMounted) {
           setEmployees(Array.isArray(data.employees) ? data.employees : []);
@@ -650,23 +710,22 @@ const InsightsPage = () => {
     return () => {
       isMounted = false;
     };
-  }, [firebaseUser]);
+  }, [firebaseUser, period]);
 
   const filteredEmployees = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    const employeesInPeriod = employees.filter((employee) => isEmployeeInPeriod(employee, period));
 
     if (!needle) {
-      return employeesInPeriod;
+      return employees;
     }
 
-    return employeesInPeriod.filter((employee) => {
+    return employees.filter((employee) => {
       return [employee.username, employee.role, employee.team, getEmployeeLiveVibe(employee)]
         .join(' ')
         .toLowerCase()
         .includes(needle);
     });
-  }, [employees, period, query]);
+  }, [employees, query]);
 
   const handleProcessImages = async () => {
     if (!firebaseUser) {
@@ -691,7 +750,7 @@ const InsightsPage = () => {
 
       setEmployees((prev) => mergeProcessResultsIntoEmployees(prev, results, skipped));
 
-      const refreshed = await getEmployees(token);
+      const refreshed = await getEmployees(token, period);
       const nextEmployees = Array.isArray(refreshed.employees) ? refreshed.employees : [];
       setEmployees(mergeProcessResultsIntoEmployees(nextEmployees, results, skipped));
 
@@ -732,7 +791,7 @@ const InsightsPage = () => {
       const details = await Promise.all(
         visibleEmployees.map(async (employee) => {
           try {
-            const summary = await getEmployeeEmotionSummary(token, employee.id, 'Week');
+            const summary = await getEmployeeEmotionSummary(token, employee.id, period);
             return { employee, summary, failed: false };
           } catch (requestError) {
             return { employee, summary: null, failed: true };
@@ -920,6 +979,12 @@ const InsightsPage = () => {
     showFilterLoader();
   };
 
+  const handleMonthChange = (event) => {
+    const monthValue = event.target.value;
+    setSelectedMonth(monthValue);
+    handlePeriodChange(getMonthPeriod(monthValue));
+  };
+
   const handleQueryChange = (event) => {
     setQuery(event.target.value);
     showFilterLoader();
@@ -955,6 +1020,8 @@ const InsightsPage = () => {
     : language === 'es'
       ? 'Aun no hay historial individual de Vibra en Vivo. Procesa imagenes para generar un resumen especifico.'
       : 'No individual Live Vibe history is available yet. Process Images to generate an employee-specific summary.';
+  const monthOptions = getMonthOptions(Number(selectedMonth.slice(0, 4)) || new Date().getFullYear());
+  const monthSelectorActive = isSelectedMonthPeriod(period);
 
   return (
     <div className="dashboard-shell">
@@ -1026,6 +1093,21 @@ const InsightsPage = () => {
                   {t(`period.${label}`, label)}
                 </button>
               ))}
+              <label className={`month-filter insights-month-filter${monthSelectorActive ? ' active' : ''}`}>
+                <span>{t('period.Custom', 'By month')}</span>
+                <select
+                  value={selectedMonth}
+                  onChange={handleMonthChange}
+                  disabled={filterLoading}
+                  aria-label={t('selectMonth', 'Select month')}
+                >
+                  {monthOptions.map((month) => (
+                    <option key={month.value} value={month.value}>
+                      {t(`month.${month.label}`, month.label)}
+                    </option>
+                  ))}
+                </select>
+              </label>
             </div>
 
             <div className="insights-search">

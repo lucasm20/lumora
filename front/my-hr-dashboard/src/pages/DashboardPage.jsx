@@ -33,6 +33,20 @@ const emotionItems = [
 ];
 
 const periodOptions = ['1h', 'Today', 'Week', 'Month'];
+const monthLabels = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+];
 const weekdayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 const emotionAliases = {
@@ -80,6 +94,27 @@ const emptyIntensityDays = weekdayLabels.map((label) => ({
   total: 0,
   intense: 0,
 }));
+
+function getMonthValue(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  return `${year}-${month}`;
+}
+
+function getMonthPeriod(monthValue) {
+  return `month:${monthValue}`;
+}
+
+function isSelectedMonthPeriod(period) {
+  return String(period || '').toLowerCase().startsWith('month:');
+}
+
+function getMonthOptions(year = new Date().getFullYear()) {
+  return monthLabels.map((label, index) => ({
+    label,
+    value: `${year}-${String(index + 1).padStart(2, '0')}`,
+  }));
+}
 
 function normalizeText(value) {
   return String(value || '').trim().toLowerCase();
@@ -913,6 +948,7 @@ const DashboardPage = () => {
   const [employees, setEmployees] = useState([]);
   const [dashboardLoadedAt, setDashboardLoadedAt] = useState(() => new Date());
   const [selectedPeriod, setSelectedPeriod] = useState('Week');
+  const [selectedMonth, setSelectedMonth] = useState(() => getMonthValue());
   const [weeklyTrend, setWeeklyTrend] = useState({
     days: emptyTrendDays,
     maxValue: 0,
@@ -1017,6 +1053,12 @@ const DashboardPage = () => {
     filterStartedAtRef.current = Date.now();
     setFilterLoading(true);
     setSelectedPeriod(period);
+  };
+
+  const handleMonthChange = (event) => {
+    const monthValue = event.target.value;
+    setSelectedMonth(monthValue);
+    handlePeriodChange(getMonthPeriod(monthValue));
   };
 
   const companyEmployees = useMemo(() => {
@@ -1230,6 +1272,9 @@ const DashboardPage = () => {
   };
 
   const companyDisplayName = userProfile?.companyName || t('companyFallback', 'Company');
+  const monthOptions = getMonthOptions(Number(selectedMonth.slice(0, 4)) || new Date().getFullYear());
+  const monthSelectorActive = isSelectedMonthPeriod(selectedPeriod);
+
   return (
     <div className="dashboard-shell">
       <aside className="sidebar">
@@ -1314,6 +1359,21 @@ const DashboardPage = () => {
                   {t(`period.${period}`, period)}
                 </button>
               ))}
+              <label className={`month-filter${monthSelectorActive ? ' active' : ''}`}>
+                <span>{t('period.Custom', 'By month')}</span>
+                <select
+                  value={selectedMonth}
+                  onChange={handleMonthChange}
+                  disabled={filterLoading}
+                  aria-label={t('selectMonth', 'Select month')}
+                >
+                  {monthOptions.map((month) => (
+                    <option key={month.value} value={month.value}>
+                      {t(`month.${month.label}`, month.label)}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <button
                 className="export-button"
                 type="button"

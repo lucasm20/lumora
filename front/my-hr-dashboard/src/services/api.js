@@ -219,8 +219,14 @@ export async function getSession(idToken) {
   });
 }
 
-export async function getEmployees(idToken) {
-  return request('/employees', {
+export async function getEmployees(idToken, period = '') {
+  const params = new URLSearchParams();
+
+  if (period) {
+    params.set('period', period);
+  }
+
+  return request(`/employees${params.toString() ? `?${params.toString()}` : ''}`, {
     headers: {
       Authorization: `Bearer ${idToken}`,
     },
